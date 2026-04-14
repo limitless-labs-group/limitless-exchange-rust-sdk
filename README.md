@@ -15,6 +15,25 @@ This crate is a parity-driven Rust port of the existing Limitless SDK surface. T
 - delegated-order service
 - websocket types and socket.io client surface
 
+**USE AT YOUR OWN RISK**
+
+This SDK is provided "as-is" without any warranties or guarantees. Trading on prediction markets involves financial risk. By using this SDK, you acknowledge that:
+
+- You are responsible for testing the SDK thoroughly before using it in production
+- The SDK authors are not liable for any financial losses or damages
+- You should review and understand the code before executing any trades
+- It is recommended to test all functionality on testnet or with small amounts first
+- The SDK may contain bugs or unexpected behavior despite best efforts
+
+**ALWAYS TEST BEFORE USING IN PRODUCTION WITH REAL FUNDS**
+
+For production use, we strongly recommend:
+
+1. Running comprehensive tests with your specific use case
+2. Starting with small transaction amounts
+3. Monitoring all transactions carefully
+4. Having proper error handling and recovery mechanisms
+
 ## Status
 
 This is the first full-surface parity pass. The crate is implemented against the Go SDK shape and verified locally with:
