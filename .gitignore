@@ -1,0 +1,32 @@
+# Build artifacts
+/target
+debug/
+*.pdb
+
+# Cargo lock for libraries (keep for binaries/applications)
+# Cargo.lock
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Rust specific
+**/*.rs.bk
+*.d
+
+# Coverage and profiling
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.html
+coverage/
