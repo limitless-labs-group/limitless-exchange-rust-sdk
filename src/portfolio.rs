@@ -34,19 +34,28 @@ impl PortfolioFetcher {
         Ok(self.get_positions().await?.amm)
     }
 
+    /// Fetch user history with cursor-based pagination.
+    ///
+    /// `cursor` — pass `None` for the first page (sends `cursor=` empty to
+    /// opt into the cursor flow), or `Some("...")` with a previous `nextCursor`.
+    /// `limit`  — items per page (1–100, defaults to 20 when omitted).
     pub async fn get_user_history(
         &self,
-        page: Option<u32>,
+        cursor: Option<&str>,
         limit: Option<u32>,
     ) -> Result<HistoryResponse> {
         self.client.require_auth("get_user_history")?;
-        let mut query = Serializer::new(String::new());
-        query.append_pair("page", &page.unwrap_or(1).to_string());
-        query.append_pair("limit", &limit.unwrap_or(10).to_string());
-        self.client
-            .get(&format!("/portfolio/history?{}", query.finish()))
-            .await
+        let url = history_path(cursor, limit);
+        self.client.get(&url).await
     }
+}
+
+fn history_path(cursor: Option<&str>, limit: Option<u32>) -> String {
+    let mut query = Serializer::new(String::new());
+    // Always send cursor=, using an empty value on the first page.
+    query.append_pair("cursor", cursor.unwrap_or(""));
+    query.append_pair("limit", &limit.unwrap_or(20).to_string());
+    format!("/portfolio/history?{}", query.finish())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -156,12 +165,12 @@ pub struct TokenBalance {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LatestTrade {
-    #[serde(rename = "latestYesPrice")]
-    pub latest_yes_price: f64,
-    #[serde(rename = "latestNoPrice")]
-    pub latest_no_price: f64,
-    #[serde(rename = "outcomeTokenPrice")]
-    pub outcome_token_price: f64,
+    #[serde(rename = "latestYesPrice", default)]
+    pub latest_yes_price: Option<f64>,
+    #[serde(rename = "latestNoPrice", default)]
+    pub latest_no_price: Option<f64>,
+    #[serde(rename = "outcomeTokenPrice", default)]
+    pub outcome_token_price: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -316,23 +325,162 @@ pub struct PortfolioSummary {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HistoryEntry {
+pub struct HistoryMarketCollateral {
+    pub symbol: String,
     pub id: String,
-    #[serde(rename = "type")]
-    pub entry_type: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: String,
-    #[serde(rename = "marketSlug", default)]
-    pub market_slug: Option<String>,
+    pub decimals: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryMarket {
+    pub closed: bool,
     #[serde(default)]
-    pub amount: Option<String>,
+    pub collateral: Option<HistoryMarketCollateral>,
     #[serde(default)]
-    pub details: Option<std::collections::HashMap<String, Value>>,
+    pub group: Option<Value>,
+    #[serde(rename = "conditionId", default)]
+    pub condition_id: Option<String>,
+    #[serde(default)]
+    pub funding: Option<String>,
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    #[serde(rename = "expirationDate", default)]
+    pub expiration_date: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    #[serde(rename = "blockTimestamp")]
+    pub block_timestamp: i64,
+    #[serde(rename = "collateralAmount", default)]
+    pub collateral_amount: Option<String>,
+    #[serde(default)]
+    pub market: Option<HistoryMarket>,
+    #[serde(rename = "outcomeIndex", default)]
+    pub outcome_index: Option<i32>,
+    #[serde(rename = "outcomeTokenAmount", default)]
+    pub outcome_token_amount: Option<String>,
+    #[serde(rename = "outcomeTokenAmounts", default)]
+    pub outcome_token_amounts: Option<Vec<String>>,
+    #[serde(rename = "outcomeTokenPrice", default)]
+    pub outcome_token_price: Option<Value>,
+    #[serde(default)]
+    pub strategy: Option<String>,
+    #[serde(rename = "transactionHash", default)]
+    pub transaction_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryResponse {
     pub data: Vec<HistoryEntry>,
-    #[serde(rename = "totalCount")]
-    pub total_count: i32,
+    #[serde(rename = "nextCursor")]
+    pub next_cursor: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn history_path_uses_empty_cursor_and_default_limit_on_first_page() {
+        assert_eq!(
+            history_path(None, None),
+            "/portfolio/history?cursor=&limit=20"
+        );
+    }
+
+    #[test]
+    fn history_path_forwards_cursor_and_limit() {
+        assert_eq!(
+            history_path(Some("cursor-1"), Some(5)),
+            "/portfolio/history?cursor=cursor-1&limit=5"
+        );
+    }
+
+    #[test]
+    fn history_response_deserializes_cursor_shape() {
+        let response: HistoryResponse = serde_json::from_value(json!({
+            "data": [{
+                "blockTimestamp": 1712345678,
+                "collateralAmount": "15.25",
+                "market": {
+                    "closed": false,
+                    "collateral": {
+                        "symbol": "USDC",
+                        "id": "usdc",
+                        "decimals": 6
+                    },
+                    "conditionId": "0xcond",
+                    "funding": "1000",
+                    "id": "market-1",
+                    "slug": "btc-above-100k",
+                    "title": "BTC above 100k?",
+                    "expirationDate": "2026-12-31T00:00:00.000Z"
+                },
+                "outcomeIndex": 0,
+                "outcomeTokenAmount": "20",
+                "outcomeTokenAmounts": ["20", "0"],
+                "outcomeTokenPrice": 0.76,
+                "strategy": "Buy",
+                "transactionHash": "0xtx1"
+            }],
+            "nextCursor": "cursor-2"
+        }))
+        .expect("history response should deserialize");
+
+        assert_eq!(response.next_cursor.as_deref(), Some("cursor-2"));
+        assert_eq!(response.data.len(), 1);
+
+        let entry = &response.data[0];
+        assert_eq!(entry.block_timestamp, 1_712_345_678);
+        assert_eq!(entry.strategy.as_deref(), Some("Buy"));
+        assert_eq!(entry.transaction_hash.as_deref(), Some("0xtx1"));
+        assert_eq!(
+            entry.market.as_ref().map(|m| m.slug.as_str()),
+            Some("btc-above-100k")
+        );
+        assert_eq!(entry.outcome_token_price, Some(json!(0.76)));
+    }
+
+    #[test]
+    fn clob_position_latest_trade_deserializes_without_price_fields() {
+        let position: CLOBPosition = serde_json::from_value(json!({
+            "market": {
+                "id": 1,
+                "slug": "btc-above-100k",
+                "title": "BTC above 100k?",
+                "closed": false,
+                "deadline": "2026-12-31T00:00:00.000Z"
+            },
+            "makerAddress": "0xmaker",
+            "positions": {
+                "yes": {
+                    "cost": "10",
+                    "fillPrice": "0.5",
+                    "marketValue": "12",
+                    "realisedPnl": "0",
+                    "unrealizedPnl": "2"
+                },
+                "no": {
+                    "cost": "0",
+                    "fillPrice": "0",
+                    "marketValue": "0",
+                    "realisedPnl": "0",
+                    "unrealizedPnl": "0"
+                }
+            },
+            "tokensBalance": {
+                "yes": "20",
+                "no": "0"
+            },
+            "latestTrade": {}
+        }))
+        .expect("clob position should deserialize");
+
+        assert_eq!(position.latest_trade.latest_yes_price, None);
+        assert_eq!(position.latest_trade.latest_no_price, None);
+        assert_eq!(position.latest_trade.outcome_token_price, None);
+    }
 }
