@@ -2,9 +2,14 @@
 name = "limitless-exchange-rust-sdk"
 version = "1.0.7"
 edition = "2021"
+authors = ["https://github.com/kuchro"]
 license = "MIT"
 description = "Rust SDK for Limitless Exchange CLOB and NegRisk trading"
 readme = "README.md"
+repository = "https://github.com/limitless-labs-group/limitless-exchange-rust-sdk"
+homepage = "https://limitless.exchange"
+documentation = "https://docs.limitless.exchange"
+rust-version = "1.74"
 keywords = ["limitless", "exchange", "prediction-markets", "clob", "negrisk"]
 categories = ["api-bindings", "web-programming::http-client"]
 

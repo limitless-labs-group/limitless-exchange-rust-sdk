@@ -1146,7 +1146,7 @@ impl SocketIoClient {
         self.writer
             .lock()
             .await
-            .send(Message::Text(packet.into()))
+            .send(Message::Text(packet))
             .await
             .map_err(|err| {
                 LimitlessError::WebSocket(format!("failed to send websocket packet: {err}"))
