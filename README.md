@@ -34,6 +34,10 @@ For production use, we strongly recommend:
 3. Monitoring all transactions carefully
 4. Having proper error handling and recovery mechanisms
 
+## Geographic Restrictions
+
+**Important**: Limitless restricts order placement from US locations due to regulatory requirements and compliance with international sanctions. Before placing orders, builders should verify their location complies with applicable regulations.
+
 ## Status
 
 This is the first full-surface parity pass. The crate is implemented against the Go SDK shape and verified locally with:
@@ -49,24 +53,93 @@ This is the first full-surface parity pass. The crate is implemented against the
 limitless-exchange-rust-sdk = "1.0.7"
 ```
 
-## Example
+## Authentication Modes
+
+- Public read-only endpoints: no authentication required. Use these for active markets, market pages, and orderbooks.
+- API key authentication: required for portfolio and standard order-placement flows.
+- HMAC-scoped authentication: used for partner/delegated/server-wallet flows and can also authenticate websocket position streams.
+
+The SDK reads `LIMITLESS_API_KEY` automatically when present, or you can configure credentials explicitly with `Client::builder()`.
+
+## Quick Start
+
+### Public Market Data
 
 ```rust
+use limitless_exchange_rust_sdk::{ActiveMarketsParams, ActiveMarketsSortBy, Client};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let sdk = Client::new()?;
+
+    let markets = sdk
+        .markets
+        .get_active_markets(Some(&ActiveMarketsParams {
+            limit: Some(5),
+            page: None,
+            sort_by: Some(ActiveMarketsSortBy::Newest),
+        }))
+        .await?;
+
+    println!("Found {} markets", markets.data.len());
+    Ok(())
+}
+```
+
+### Authenticated Portfolio Access
+
+```rust
+use std::env;
+
+use limitless_exchange_rust_sdk::Client;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let sdk = Client::from_http_client(
+        Client::builder()
+            .api_key(env::var("LIMITLESS_API_KEY")?)
+            .build()?,
+    )?;
+
+    let positions = sdk.portfolio.get_positions().await?;
+    println!("CLOB positions: {}", positions.clob.len());
+
+    let history = sdk.portfolio.get_user_history(None, Some(20)).await?;
+    println!("History entries: {}", history.data.len());
+
+    if let Some(next_cursor) = history.next_cursor.as_deref() {
+        let next_page = sdk
+            .portfolio
+            .get_user_history(Some(next_cursor), Some(20))
+            .await?;
+        println!("Next page entries: {}", next_page.data.len());
+    }
+
+    Ok(())
+}
+```
+
+### Signed Order Placement
+
+```rust
+use std::env;
+
 use limitless_exchange_rust_sdk::{Client, OrderArgs, OrderType, Side, GtcOrderArgs};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::from_http_client(
         Client::builder()
-            .api_key("your-api-key")
+            .api_key(env::var("LIMITLESS_API_KEY")?)
             .build()?
     )?;
 
     let market = client.markets.get_market("btc-above-150k-by-jun-2026").await?;
     println!("market: {}", market.title);
 
+    let private_key = env::var("PRIVATE_KEY")?;
     let order_client = client.new_order_client(
-        "0xYOUR_PRIVATE_KEY",
+        &private_key,
         None,
     )?;
 
@@ -92,13 +165,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Workflow Guide
+
+- Public market discovery: [examples/active_markets.rs](examples/active_markets.rs)
+- Custom client builder and logging: [examples/custom_client.rs](examples/custom_client.rs)
+- Market-page discovery and filtered browsing: [examples/market_pages.rs](examples/market_pages.rs)
+- Portfolio and cursor-based history: [examples/portfolio.rs](examples/portfolio.rs)
+- User-order retrieval and market cancel-all: [examples/user_orders.rs](examples/user_orders.rs)
+- Signed CLOB orders:
+  - GTC: [examples/clob_gtc_order.rs](examples/clob_gtc_order.rs)
+  - FAK: [examples/clob_fak_order.rs](examples/clob_fak_order.rs)
+  - FOK: [examples/clob_fok_order.rs](examples/clob_fok_order.rs)
+- NegRisk order flow: [examples/negrisk_order.rs](examples/negrisk_order.rs)
+- Delegated partner flows:
+  - delegated order: [examples/delegated_order.rs](examples/delegated_order.rs)
+  - delegated FOK order: [examples/delegated_fok_order.rs](examples/delegated_fok_order.rs)
+- API-token revoke flow: [examples/api_token_revoke.rs](examples/api_token_revoke.rs)
+- Server-wallet redeem/withdraw flow: [examples/server_wallet_redeem_withdraw.rs](examples/server_wallet_redeem_withdraw.rs)
+- WebSocket subscriptions:
+  - orderbook: [examples/websocket_orderbook.rs](examples/websocket_orderbook.rs)
+  - positions and transactions: [examples/websocket_positions.rs](examples/websocket_positions.rs)
+
 ## Examples
 
 The repository includes the same example catalog as the Go SDK under [examples/](examples/):
 
 - `cargo run --example active_markets`
+- `cargo run --example custom_client`
+- `cargo run --example market_pages`
 - `cargo run --example portfolio`
+- `cargo run --example user_orders`
 - `cargo run --example api_tokens`
+- `cargo run --example api_token_revoke`
 - `cargo run --example clob_gtc_order`
 - `cargo run --example clob_fak_order`
 - `cargo run --example clob_fok_order`
