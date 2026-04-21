@@ -2,7 +2,7 @@
 name = "limitless-exchange-rust-sdk"
 version = "1.0.7"
 edition = "2021"
-authors = ["Limitless Labs <k@limitless.network>"]
+authors = ["https://github.com/kuchro"]
 license = "MIT"
 description = "Rust SDK for Limitless Exchange CLOB and NegRisk trading"
 readme = "README.md"
