@@ -1220,7 +1220,7 @@ fn encode_u256_from_i64(value: i64) -> Result<[u8; 32]> {
             "expected non-negative integer, got {value}"
         )));
     }
-    Ok(encode_bigint_to_u256(&BigInt::from(value))?)
+    encode_bigint_to_u256(&BigInt::from(value))
 }
 
 fn encode_u256_from_i32(value: i32) -> Result<[u8; 32]> {
@@ -1229,7 +1229,7 @@ fn encode_u256_from_i32(value: i32) -> Result<[u8; 32]> {
             "expected non-negative integer, got {value}"
         )));
     }
-    Ok(encode_bigint_to_u256(&BigInt::from(value))?)
+    encode_bigint_to_u256(&BigInt::from(value))
 }
 
 fn encode_u256_from_u64(value: u64) -> [u8; 32] {

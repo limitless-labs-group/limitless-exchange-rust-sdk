@@ -321,7 +321,7 @@ impl HttpClient {
         let raw = self
             .do_request_raw(method, path, body, RequestOptions::default(), cfg)
             .await?;
-        Ok(raw.json()?)
+        raw.json()
     }
 
     async fn do_request_raw<B: Serialize + ?Sized>(
