@@ -31,18 +31,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("    PnL: {}", position.unrealized_pnl);
     }
 
-    let history = sdk.portfolio.get_user_history(Some(1), Some(10)).await?;
-    println!(
-        "\nHistory: {} entries (total: {})",
-        history.data.len(),
-        history.total_count
-    );
-    for entry in history.data {
-        print!("  [{}] {}", entry.entry_type, entry.created_at);
-        if let Some(market_slug) = entry.market_slug {
-            print!(" - {}", market_slug);
-        }
-        println!();
+    let history = sdk.portfolio.get_user_history(None, Some(10)).await?;
+    println!("\nHistory: {} entries", history.data.len());
+    for entry in &history.data {
+        let slug = entry
+            .market
+            .as_ref()
+            .map(|m| format!(" - {}", m.slug))
+            .unwrap_or_default();
+        println!(
+            "  [{}] ts={}{}",
+            entry.strategy.as_deref().unwrap_or("?"),
+            entry.block_timestamp,
+            slug
+        );
+    }
+    if let Some(cursor) = &history.next_cursor {
+        println!("  Next cursor: {}", cursor);
     }
 
     Ok(())

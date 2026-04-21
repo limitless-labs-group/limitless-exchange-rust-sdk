@@ -249,8 +249,8 @@ pub struct CreatedOrder {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrderMatch {
     pub id: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: String,
+    #[serde(rename = "createdAt", default)]
+    pub created_at: Option<String>,
     #[serde(rename = "matchedSize")]
     pub matched_size: String,
     #[serde(rename = "orderId")]

@@ -34,18 +34,26 @@ impl PortfolioFetcher {
         Ok(self.get_positions().await?.amm)
     }
 
+    /// Fetch user history with cursor-based pagination.
+    ///
+    /// `cursor` — pass `None` for the first page (sends `cursor=` empty to
+    /// opt into the cursor flow), or `Some("...")` with a previous `nextCursor`.
+    /// `limit`  — items per page (1–100, API default 20).
     pub async fn get_user_history(
         &self,
-        page: Option<u32>,
+        cursor: Option<&str>,
         limit: Option<u32>,
     ) -> Result<HistoryResponse> {
         self.client.require_auth("get_user_history")?;
         let mut query = Serializer::new(String::new());
-        query.append_pair("page", &page.unwrap_or(1).to_string());
-        query.append_pair("limit", &limit.unwrap_or(10).to_string());
-        self.client
-            .get(&format!("/portfolio/history?{}", query.finish()))
-            .await
+        // Always send cursor= (empty on first page) to use cursor flow,
+        // otherwise the API falls back to the legacy page/limit path.
+        query.append_pair("cursor", cursor.unwrap_or(""));
+        if let Some(l) = limit {
+            query.append_pair("limit", &l.to_string());
+        }
+        let url = format!("/portfolio/history?{}", query.finish());
+        self.client.get(&url).await
     }
 }
 
@@ -156,12 +164,12 @@ pub struct TokenBalance {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LatestTrade {
-    #[serde(rename = "latestYesPrice")]
-    pub latest_yes_price: f64,
-    #[serde(rename = "latestNoPrice")]
-    pub latest_no_price: f64,
-    #[serde(rename = "outcomeTokenPrice")]
-    pub outcome_token_price: f64,
+    #[serde(rename = "latestYesPrice", default)]
+    pub latest_yes_price: Option<f64>,
+    #[serde(rename = "latestNoPrice", default)]
+    pub latest_no_price: Option<f64>,
+    #[serde(rename = "outcomeTokenPrice", default)]
+    pub outcome_token_price: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -316,23 +324,55 @@ pub struct PortfolioSummary {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HistoryEntry {
+pub struct HistoryMarketCollateral {
+    pub symbol: String,
     pub id: String,
-    #[serde(rename = "type")]
-    pub entry_type: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: String,
-    #[serde(rename = "marketSlug", default)]
-    pub market_slug: Option<String>,
+    pub decimals: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryMarket {
+    pub closed: bool,
     #[serde(default)]
-    pub amount: Option<String>,
+    pub collateral: Option<HistoryMarketCollateral>,
     #[serde(default)]
-    pub details: Option<std::collections::HashMap<String, Value>>,
+    pub group: Option<Value>,
+    #[serde(rename = "conditionId", default)]
+    pub condition_id: Option<String>,
+    #[serde(default)]
+    pub funding: Option<String>,
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    #[serde(rename = "expirationDate", default)]
+    pub expiration_date: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    #[serde(rename = "blockTimestamp")]
+    pub block_timestamp: i64,
+    #[serde(rename = "collateralAmount", default)]
+    pub collateral_amount: Option<String>,
+    #[serde(default)]
+    pub market: Option<HistoryMarket>,
+    #[serde(rename = "outcomeIndex", default)]
+    pub outcome_index: Option<i32>,
+    #[serde(rename = "outcomeTokenAmount", default)]
+    pub outcome_token_amount: Option<String>,
+    #[serde(rename = "outcomeTokenAmounts", default)]
+    pub outcome_token_amounts: Option<Vec<String>>,
+    #[serde(rename = "outcomeTokenPrice", default)]
+    pub outcome_token_price: Option<Value>,
+    #[serde(default)]
+    pub strategy: Option<String>,
+    #[serde(rename = "transactionHash", default)]
+    pub transaction_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryResponse {
     pub data: Vec<HistoryEntry>,
-    #[serde(rename = "totalCount")]
-    pub total_count: i32,
+    #[serde(rename = "nextCursor")]
+    pub next_cursor: Option<String>,
 }
