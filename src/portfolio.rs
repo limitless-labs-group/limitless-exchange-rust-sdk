@@ -38,23 +38,24 @@ impl PortfolioFetcher {
     ///
     /// `cursor` — pass `None` for the first page (sends `cursor=` empty to
     /// opt into the cursor flow), or `Some("...")` with a previous `nextCursor`.
-    /// `limit`  — items per page (1–100, API default 20).
+    /// `limit`  — items per page (1–100, defaults to 20 when omitted).
     pub async fn get_user_history(
         &self,
         cursor: Option<&str>,
         limit: Option<u32>,
     ) -> Result<HistoryResponse> {
         self.client.require_auth("get_user_history")?;
-        let mut query = Serializer::new(String::new());
-        // Always send cursor= (empty on first page) to use cursor flow,
-        // otherwise the API falls back to the legacy page/limit path.
-        query.append_pair("cursor", cursor.unwrap_or(""));
-        if let Some(l) = limit {
-            query.append_pair("limit", &l.to_string());
-        }
-        let url = format!("/portfolio/history?{}", query.finish());
+        let url = history_path(cursor, limit);
         self.client.get(&url).await
     }
+}
+
+fn history_path(cursor: Option<&str>, limit: Option<u32>) -> String {
+    let mut query = Serializer::new(String::new());
+    // Always send cursor=, using an empty value on the first page.
+    query.append_pair("cursor", cursor.unwrap_or(""));
+    query.append_pair("limit", &limit.unwrap_or(20).to_string());
+    format!("/portfolio/history?{}", query.finish())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -375,4 +376,111 @@ pub struct HistoryResponse {
     pub data: Vec<HistoryEntry>,
     #[serde(rename = "nextCursor")]
     pub next_cursor: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn history_path_uses_empty_cursor_and_default_limit_on_first_page() {
+        assert_eq!(
+            history_path(None, None),
+            "/portfolio/history?cursor=&limit=20"
+        );
+    }
+
+    #[test]
+    fn history_path_forwards_cursor_and_limit() {
+        assert_eq!(
+            history_path(Some("cursor-1"), Some(5)),
+            "/portfolio/history?cursor=cursor-1&limit=5"
+        );
+    }
+
+    #[test]
+    fn history_response_deserializes_cursor_shape() {
+        let response: HistoryResponse = serde_json::from_value(json!({
+            "data": [{
+                "blockTimestamp": 1712345678,
+                "collateralAmount": "15.25",
+                "market": {
+                    "closed": false,
+                    "collateral": {
+                        "symbol": "USDC",
+                        "id": "usdc",
+                        "decimals": 6
+                    },
+                    "conditionId": "0xcond",
+                    "funding": "1000",
+                    "id": "market-1",
+                    "slug": "btc-above-100k",
+                    "title": "BTC above 100k?",
+                    "expirationDate": "2026-12-31T00:00:00.000Z"
+                },
+                "outcomeIndex": 0,
+                "outcomeTokenAmount": "20",
+                "outcomeTokenAmounts": ["20", "0"],
+                "outcomeTokenPrice": 0.76,
+                "strategy": "Buy",
+                "transactionHash": "0xtx1"
+            }],
+            "nextCursor": "cursor-2"
+        }))
+        .expect("history response should deserialize");
+
+        assert_eq!(response.next_cursor.as_deref(), Some("cursor-2"));
+        assert_eq!(response.data.len(), 1);
+
+        let entry = &response.data[0];
+        assert_eq!(entry.block_timestamp, 1_712_345_678);
+        assert_eq!(entry.strategy.as_deref(), Some("Buy"));
+        assert_eq!(entry.transaction_hash.as_deref(), Some("0xtx1"));
+        assert_eq!(
+            entry.market.as_ref().map(|m| m.slug.as_str()),
+            Some("btc-above-100k")
+        );
+        assert_eq!(entry.outcome_token_price, Some(json!(0.76)));
+    }
+
+    #[test]
+    fn clob_position_latest_trade_deserializes_without_price_fields() {
+        let position: CLOBPosition = serde_json::from_value(json!({
+            "market": {
+                "id": 1,
+                "slug": "btc-above-100k",
+                "title": "BTC above 100k?",
+                "closed": false,
+                "deadline": "2026-12-31T00:00:00.000Z"
+            },
+            "makerAddress": "0xmaker",
+            "positions": {
+                "yes": {
+                    "cost": "10",
+                    "fillPrice": "0.5",
+                    "marketValue": "12",
+                    "realisedPnl": "0",
+                    "unrealizedPnl": "2"
+                },
+                "no": {
+                    "cost": "0",
+                    "fillPrice": "0",
+                    "marketValue": "0",
+                    "realisedPnl": "0",
+                    "unrealizedPnl": "0"
+                }
+            },
+            "tokensBalance": {
+                "yes": "20",
+                "no": "0"
+            },
+            "latestTrade": {}
+        }))
+        .expect("clob position should deserialize");
+
+        assert_eq!(position.latest_trade.latest_yes_price, None);
+        assert_eq!(position.latest_trade.latest_no_price, None);
+        assert_eq!(position.latest_trade.outcome_token_price, None);
+    }
 }

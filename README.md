@@ -1,6 +1,6 @@
 # Limitless Exchange Rust SDK
 
-**v1.0.6** | Rust SDK parity with the existing Limitless SDK surface
+**v1.0.7** | Rust SDK parity with the existing Limitless SDK surface
 
 Rust SDK for interacting with the Limitless Exchange API.
 
@@ -46,7 +46,7 @@ This is the first full-surface parity pass. The crate is implemented against the
 
 ```toml
 [dependencies]
-limitless-exchange-rust-sdk = "1.0.6"
+limitless-exchange-rust-sdk = "1.0.7"
 ```
 
 ## Example

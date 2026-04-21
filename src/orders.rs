@@ -1486,6 +1486,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     const TEST_PRIVATE_KEY_HEX: &str =
         "0x59c6995e998f97a5a0044966f0945382d7f84be58f4d1e8e8f8d0f9f5c5e7d5a";
@@ -1552,6 +1553,37 @@ mod tests {
         assert_eq!(order.maker_amount, 470_154);
         assert_eq!(order.taker_amount, 1_234_000);
         assert_eq!(order.price, Some(0.381));
+    }
+
+    #[test]
+    fn order_match_deserializes_without_created_at() {
+        let order_match: OrderMatch = serde_json::from_value(json!({
+            "id": "match-1",
+            "matchedSize": "100",
+            "orderId": "order-1"
+        }))
+        .expect("order match should deserialize");
+
+        assert_eq!(order_match.id, "match-1");
+        assert_eq!(order_match.created_at, None);
+        assert_eq!(order_match.matched_size, "100");
+        assert_eq!(order_match.order_id, "order-1");
+    }
+
+    #[test]
+    fn order_match_deserializes_with_null_created_at() {
+        let order_match: OrderMatch = serde_json::from_value(json!({
+            "id": "match-1",
+            "createdAt": null,
+            "matchedSize": "100",
+            "orderId": "order-1"
+        }))
+        .expect("order match should deserialize");
+
+        assert_eq!(order_match.id, "match-1");
+        assert_eq!(order_match.created_at, None);
+        assert_eq!(order_match.matched_size, "100");
+        assert_eq!(order_match.order_id, "order-1");
     }
 
     #[test]
