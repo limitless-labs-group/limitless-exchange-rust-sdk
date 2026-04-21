@@ -2,9 +2,8 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
-## [Unreleased]
+## [1.0.8]
 
-## [1.0.7]
 ### Changed
 
 - Migrated portfolio history endpoint from legacy page/limit pagination to cursor-based pagination.
@@ -14,11 +13,14 @@ All notable changes to the Limitless Exchange Rust SDK will be documented in thi
 - Updated `HistoryEntry` struct to match current API response shape (`block_timestamp`, `strategy`, `transaction_hash`, `market`, etc.).
 - Replaced `HistoryResponse.total_count` with `next_cursor: Option<String>` for cursor-based pagination.
 - Added `HistoryMarket` and `HistoryMarketCollateral` structs.
+- Expanded the example catalog with market-pages, user-orders, API-token revoke, and custom-client flows.
+- Updated websocket examples to use the current market-price subscription flow.
 
 ### Fixed
 
 - Made `OrderMatch.created_at` optional to handle API responses that omit the field.
 - Made `LatestTrade` price fields (`latest_yes_price`, `latest_no_price`, `outcome_token_price`) optional for markets without trades.
+- Fixed the websocket transport handshake against the production Socket.IO endpoint and pinned the TLS crypto provider explicitly for Rustls.
 
 ## [1.0.6]
 

@@ -1,6 +1,6 @@
 # Limitless Exchange Rust SDK
 
-**v1.0.7** | Rust SDK parity with the existing Limitless SDK surface
+**v1.0.8** | Rust SDK parity with the existing Limitless SDK surface
 
 Rust SDK for interacting with the Limitless Exchange API.
 
@@ -50,7 +50,7 @@ This is the first full-surface parity pass. The crate is implemented against the
 
 ```toml
 [dependencies]
-limitless-exchange-rust-sdk = "1.0.7"
+limitless-exchange-rust-sdk = "1.0.8"
 ```
 
 ## Authentication Modes
@@ -185,27 +185,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - WebSocket subscriptions:
   - orderbook: [examples/websocket_orderbook.rs](examples/websocket_orderbook.rs)
   - positions and transactions: [examples/websocket_positions.rs](examples/websocket_positions.rs)
-
-## Examples
-
-The repository includes the same example catalog as the Go SDK under [examples/](examples/):
-
-- `cargo run --example active_markets`
-- `cargo run --example custom_client`
-- `cargo run --example market_pages`
-- `cargo run --example portfolio`
-- `cargo run --example user_orders`
-- `cargo run --example api_tokens`
-- `cargo run --example api_token_revoke`
-- `cargo run --example clob_gtc_order`
-- `cargo run --example clob_fak_order`
-- `cargo run --example clob_fok_order`
-- `cargo run --example negrisk_order`
-- `cargo run --example delegated_order`
-- `cargo run --example delegated_fok_order`
-- `cargo run --example e2e_fok_flow`
-- `cargo run --example server_wallet_redeem_withdraw`
-- `cargo run --example websocket_orderbook`
-- `cargo run --example websocket_positions`
-
-See [examples/README.md](examples/README.md) for required environment variables and per-example notes.

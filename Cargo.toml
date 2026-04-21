@@ -1,6 +1,6 @@
 [package]
 name = "limitless-exchange-rust-sdk"
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 authors = ["https://github.com/kuchro"]
 license = "MIT"
@@ -30,6 +30,8 @@ once_cell = "1.21"
 rand = "0.8"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pki-types = "1.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_repr = "0.1"
@@ -37,7 +39,9 @@ sha2 = "0.10"
 sha3 = "0.10"
 thiserror = "1.0"
 tokio = { version = "1.43", features = ["macros", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls = "0.26"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 url = "2.5"
 urlencoding = "2.1"
+webpki-roots = "0.26"
 zeroize = "1.8"

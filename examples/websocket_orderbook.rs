@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ws.connect().await?;
     ws.subscribe(
-        SubscriptionChannel::Orderbook,
+        SubscriptionChannel::SubscribeMarketPrices,
         SubscriptionOptions {
             market_slugs: vec![market_slug.clone()],
             ..Default::default()
