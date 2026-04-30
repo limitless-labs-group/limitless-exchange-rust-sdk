@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "   Fund {} with {} on {}.",
         partner_account.account, market.collateral_token.symbol, market.collateral_token.address,
     );
-    println!("   New server wallets also need the backend allowance provisioning to finish before the first delegated trade.");
+    println!("   Check delegated allowances with partner_accounts.check_allowances; retry missing or failed targets with retry_allowances, then poll again.");
 
     let ready_delay_ms =
         support::optional_non_negative_u64("LIMITLESS_DELEGATED_ACCOUNT_READY_DELAY_MS", 10_000);
