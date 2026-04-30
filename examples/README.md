@@ -21,6 +21,7 @@ Available examples:
 - `negrisk_order`
 - `delegated_order`
 - `delegated_fok_order`
+- `partner_account_allowances`
 - `e2e_fok_flow`
 - `server_wallet_redeem_withdraw`
 - `websocket_orderbook`
@@ -41,6 +42,7 @@ Common environment variables:
 Partner / delegated examples:
 
 - `LIMITLESS_PARTNER_PROFILE_ID`
+- `LIMITLESS_PARTNER_ACCOUNT_PROFILE_ID`
 - `LIMITLESS_TARGET_FEE_RATE_BPS`
 - `PARTNER_NAME`
 - `LIMITLESS_DELEGATED_ACCOUNT_READY_DELAY_MS`
@@ -57,9 +59,12 @@ Server-wallet example:
 
 Partner server-wallet allowance recovery:
 
+- Run the standalone flow with `cargo run --example partner_account_allowances`.
 - Use `Client::partner_accounts.check_allowances(profile_id)` to inspect allowance readiness.
-- Use `Client::partner_accounts.retry_allowances(profile_id)` to retry missing or failed retryable targets.
+- Use `Client::partner_accounts.retry_allowances(profile_id)` to retry missing or failed retryable targets. Retry re-checks live chain state and submits only targets still missing.
 - These calls require `LIMITLESS_API_TOKEN_ID` and `LIMITLESS_API_TOKEN_SECRET` for a token with `account_creation` and `delegated_signing` scopes.
+- A retry response with `submitted` targets means that retry request submitted a sponsored transaction or user operation; poll `check_allowances` again after a short delay.
+- Retry `429` and `409` responses are returned as `LimitlessError::Api`; use `status == 429` to wait for `retryAfterSeconds` from the raw body, and `status == 409` to wait briefly before checking status again.
 
 Order-management examples:
 
@@ -77,4 +82,4 @@ Notes:
 - Never hardcode `PRIVATE_KEY`, API tokens, or partner secrets in source files. Provide them through environment variables or your secret manager.
 - `websocket_positions` accepts either `LIMITLESS_API_KEY` or scoped HMAC credentials.
 - `server_wallet_redeem_withdraw` is only for child profiles created with `create_server_wallet = true`.
-- `cargo check --examples` passes in this repository as of the current `1.0.8` release prep.
+- `cargo check --examples` passes in this repository as of the current `1.0.9` release prep.

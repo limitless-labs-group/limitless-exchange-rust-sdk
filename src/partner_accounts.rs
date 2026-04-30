@@ -58,7 +58,8 @@ impl PartnerAccountService {
             .await
     }
 
-    /// Checks delegated-trading allowance readiness for a partner-created server-wallet profile.
+    /// Checks delegated-trading allowance readiness from live chain state for a partner-created
+    /// server-wallet profile.
     pub async fn check_allowances(
         &self,
         profile_id: i32,
@@ -68,7 +69,12 @@ impl PartnerAccountService {
         self.client.get(&path).await
     }
 
-    /// Retries missing or failed delegated-trading allowances for a partner-created server-wallet profile.
+    /// Re-checks live chain state and retries delegated-trading allowances that are still missing
+    /// for a partner-created server-wallet profile.
+    ///
+    /// Submitted targets in the response mean this retry request submitted a sponsored transaction
+    /// or user operation; call `check_allowances` again after a short delay to observe confirmed
+    /// chain state.
     pub async fn retry_allowances(
         &self,
         profile_id: i32,
@@ -127,8 +133,6 @@ pub const PARTNER_ACCOUNT_ALLOWANCE_ERROR_PRIVY_SPONSORSHIP_UNAVAILABLE: &str =
 pub const PARTNER_ACCOUNT_ALLOWANCE_ERROR_PRIVY_SUBMISSION_FAILED: &str = "PRIVY_SUBMISSION_FAILED";
 pub const PARTNER_ACCOUNT_ALLOWANCE_ERROR_RPC_READ_FAILED: &str = "RPC_READ_FAILED";
 pub const PARTNER_ACCOUNT_ALLOWANCE_ERROR_REQUEST_BUDGET_EXCEEDED: &str = "REQUEST_BUDGET_EXCEEDED";
-pub const PARTNER_ACCOUNT_ALLOWANCE_ERROR_IN_FLIGHT_ELSEWHERE: &str = "IN_FLIGHT_ELSEWHERE";
-pub const PARTNER_ACCOUNT_ALLOWANCE_ERROR_RATE_LIMITED: &str = "RATE_LIMITED";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartnerAccountAllowanceSummary {
@@ -163,10 +167,6 @@ pub struct PartnerAccountAllowanceTarget {
     pub error_code: Option<String>,
     #[serde(rename = "errorMessage", default)]
     pub error_message: Option<String>,
-    #[serde(rename = "retryAfterSeconds", default)]
-    pub retry_after_seconds: Option<i32>,
-    #[serde(rename = "nextRetryAt", default)]
-    pub next_retry_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -182,10 +182,6 @@ pub struct PartnerAccountAllowanceResponse {
     pub ready: bool,
     pub summary: PartnerAccountAllowanceSummary,
     pub targets: Vec<PartnerAccountAllowanceTarget>,
-    #[serde(rename = "retryAfterSeconds", default)]
-    pub retry_after_seconds: Option<i32>,
-    #[serde(rename = "nextRetryAt", default)]
-    pub next_retry_at: Option<String>,
 }
 
 fn partner_account_allowances_path(profile_id: i32) -> Result<String> {
@@ -201,7 +197,13 @@ fn partner_account_allowances_path(profile_id: i32) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{hmac::HmacCredentials, http_client::HttpClient};
+    use reqwest::StatusCode;
+
+    use crate::{
+        errors::{parse_api_error, LimitlessError},
+        hmac::HmacCredentials,
+        http_client::HttpClient,
+    };
 
     use super::{
         partner_account_allowances_path, PartnerAccountAllowanceResponse, PartnerAccountService,
@@ -287,5 +289,40 @@ mod tests {
             response.targets[0].transaction_id.as_deref(),
             Some("privy-transaction-id")
         );
+    }
+
+    #[test]
+    fn retry_error_responses_preserve_status_and_retry_body() {
+        let rate_limited = parse_api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            br#"{"message":"rate limited","retryAfterSeconds":42}"#,
+            "/profiles/partner-accounts/12345/allowances/retry",
+            "POST",
+        );
+
+        match rate_limited {
+            LimitlessError::Api(err) => {
+                assert_eq!(err.status, 429);
+                assert_eq!(
+                    err.data
+                        .get("retryAfterSeconds")
+                        .and_then(serde_json::Value::as_i64),
+                    Some(42)
+                );
+            }
+            other => panic!("expected API error, got {other:?}"),
+        }
+
+        let conflict = parse_api_error(
+            StatusCode::CONFLICT,
+            br#"{"message":"allowance retry already running"}"#,
+            "/profiles/partner-accounts/12345/allowances/retry",
+            "POST",
+        );
+
+        match conflict {
+            LimitlessError::Api(err) => assert_eq!(err.status, 409),
+            other => panic!("expected API error, got {other:?}"),
+        }
     }
 }

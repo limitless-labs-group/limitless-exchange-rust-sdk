@@ -4,12 +4,24 @@ All notable changes to the Limitless Exchange Rust SDK will be documented in thi
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-04-30
+
 ### Added
 
 - Added partner server-wallet allowance recovery endpoints:
   - `PartnerAccountService::check_allowances`
   - `PartnerAccountService::retry_allowances`
-- Added typed allowance recovery response models for summaries, targets, statuses, and retry metadata.
+- Added typed allowance recovery response models for summaries, targets, and statuses.
+- Added runnable `partner_account_allowances` example for partner HMAC allowance check and retry operations without admin APIs.
+
+### Changed
+
+- Updated partner allowance recovery models and docs for live-chain retry behavior:
+  - target `submitted` status now means the current retry request submitted a sponsored transaction or user operation
+  - target-level `IN_FLIGHT_ELSEWHERE`, `RATE_LIMITED`, and `nextRetryAt` modeling was removed
+  - success response `retryAfterSeconds` / `nextRetryAt` modeling was removed; `429` retry timing remains available from the raw API error body
+  - retry `429` and `409` responses are surfaced as `LimitlessError::Api` with the HTTP status and raw response body
+- README, examples README, Cargo manifest, and lockfile now target `v1.0.9`.
 
 ## [1.0.8]
 

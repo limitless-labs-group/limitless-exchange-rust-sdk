@@ -1,6 +1,6 @@
 # Limitless Exchange Rust SDK
 
-**v1.0.8** | Rust SDK parity with the existing Limitless SDK surface
+**v1.0.9** | Rust SDK parity with the existing Limitless SDK surface
 
 Rust SDK for interacting with the Limitless Exchange API.
 
@@ -50,7 +50,7 @@ This is the first full-surface parity pass. The crate is implemented against the
 
 ```toml
 [dependencies]
-limitless-exchange-rust-sdk = "1.0.8"
+limitless-exchange-rust-sdk = "1.0.9"
 ```
 
 ## Authentication Modes
@@ -180,6 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Delegated partner flows:
   - delegated order: [examples/delegated_order.rs](examples/delegated_order.rs)
   - delegated FOK order: [examples/delegated_fok_order.rs](examples/delegated_fok_order.rs)
+- Partner allowance recovery: [examples/partner_account_allowances.rs](examples/partner_account_allowances.rs)
 - API-token revoke flow: [examples/api_token_revoke.rs](examples/api_token_revoke.rs)
 - Server-wallet redeem/withdraw flow: [examples/server_wallet_redeem_withdraw.rs](examples/server_wallet_redeem_withdraw.rs)
 - WebSocket subscriptions:
@@ -205,8 +206,12 @@ let sdk = Client::from_http_client(
 let profile_id = 12345;
 let mut allowances = sdk.partner_accounts.check_allowances(profile_id).await?;
 if !allowances.ready {
+    // Retry re-checks live chain state and submits only targets still missing.
+    // A returned "submitted" status means this request submitted a sponsored tx/user operation.
     allowances = sdk.partner_accounts.retry_allowances(profile_id).await?;
 }
 
 println!("allowance ready: {}", allowances.ready);
 ```
+
+Poll `check_allowances` first. If `ready` is false and one or more targets are `missing` or `failed` with `retryable = true`, call `retry_allowances`, then poll `check_allowances` again after a short delay. Retry `429` and `409` responses are returned as `LimitlessError::Api`; inspect `err.status`, and for `429` read `retryAfterSeconds` from `err.data`.
