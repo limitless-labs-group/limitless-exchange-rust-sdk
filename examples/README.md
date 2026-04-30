@@ -55,6 +55,12 @@ Server-wallet example:
 - `LIMITLESS_ON_BEHALF_OF`
 - `LIMITLESS_SERVER_WALLET_ACCOUNT`
 
+Partner server-wallet allowance recovery:
+
+- Use `Client::partner_accounts.check_allowances(profile_id)` to inspect allowance readiness.
+- Use `Client::partner_accounts.retry_allowances(profile_id)` to retry missing or failed retryable targets.
+- These calls require `LIMITLESS_API_TOKEN_ID` and `LIMITLESS_API_TOKEN_SECRET` for a token with `account_creation` and `delegated_signing` scopes.
+
 Order-management examples:
 
 - `LIMITLESS_CANCEL_ALL_ORDERS=1` to enable the destructive cancel-all step in `user_orders`

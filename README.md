@@ -185,3 +185,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - WebSocket subscriptions:
   - orderbook: [examples/websocket_orderbook.rs](examples/websocket_orderbook.rs)
   - positions and transactions: [examples/websocket_positions.rs](examples/websocket_positions.rs)
+
+### Partner Server-Wallet Allowances
+
+Use `partner_accounts.check_allowances(profile_id)` and `partner_accounts.retry_allowances(profile_id)` only for partner child profiles created with `create_server_wallet = true`. These endpoints require scoped HMAC credentials derived with `SCOPE_ACCOUNT_CREATION` and `SCOPE_DELEGATED_SIGNING`.
+
+```rust
+use limitless_exchange_rust_sdk::{Client, HmacCredentials};
+
+let sdk = Client::from_http_client(
+    Client::builder()
+        .hmac_credentials(HmacCredentials {
+            token_id: std::env::var("LIMITLESS_API_TOKEN_ID")?,
+            secret: std::env::var("LIMITLESS_API_TOKEN_SECRET")?,
+        })
+        .build()?,
+)?;
+
+let profile_id = 12345;
+let mut allowances = sdk.partner_accounts.check_allowances(profile_id).await?;
+if !allowances.ready {
+    allowances = sdk.partner_accounts.retry_allowances(profile_id).await?;
+}
+
+println!("allowance ready: {}", allowances.ready);
+```

@@ -2,6 +2,15 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Added partner server-wallet allowance recovery endpoints:
+  - `PartnerAccountService::check_allowances`
+  - `PartnerAccountService::retry_allowances`
+- Added typed allowance recovery response models for summaries, targets, statuses, and retry metadata.
+
 ## [1.0.8]
 
 ### Changed
