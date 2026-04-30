@@ -71,4 +71,4 @@ Notes:
 - Never hardcode `PRIVATE_KEY`, API tokens, or partner secrets in source files. Provide them through environment variables or your secret manager.
 - `websocket_positions` accepts either `LIMITLESS_API_KEY` or scoped HMAC credentials.
 - `server_wallet_redeem_withdraw` is only for child profiles created with `create_server_wallet = true`.
-- `cargo check --examples` passes in this repository as of the current `1.0.7` release prep.
+- `cargo check --examples` passes in this repository as of the current `1.0.8` release prep.

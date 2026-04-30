@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt::Write as _,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, RwLock,
@@ -9,10 +10,27 @@ use std::{
 
 use futures_util::{sink::SinkExt, stream::SplitSink, stream::SplitStream, StreamExt};
 use http::{HeaderMap, HeaderValue, Request};
+use once_cell::sync::Lazy;
+use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
+use rustls_pki_types::ServerName;
 use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use tokio::{net::TcpStream, sync::oneshot, time::sleep};
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::oneshot,
+    time::sleep,
+};
+use tokio_rustls::TlsConnector;
+use tokio_tungstenite::{
+    tungstenite::{
+        client::IntoClientRequest,
+        handshake::{client::generate_key, derive_accept_key},
+        protocol::Role,
+        Message,
+    },
+    MaybeTlsStream, WebSocketStream,
+};
 
 use crate::{
     constants::DEFAULT_WS_URL,
@@ -25,11 +43,26 @@ use crate::{
 const SDK_ID: &str = "lmts-sdk-rs";
 const SOCKET_IO_PATH: &str = "/socket.io/?EIO=4&transport=websocket";
 const SOCKET_NAMESPACE: &str = "/markets";
+const MAX_HANDSHAKE_RESPONSE_BYTES: usize = 64 * 1024;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsWrite = SplitSink<WsStream, Message>;
 type WsRead = SplitStream<WsStream>;
 type EventHandler = Arc<dyn Fn(Value) + Send + Sync>;
+
+static DEFAULT_TLS_CONFIG: Lazy<Arc<RustlsClientConfig>> = Lazy::new(|| {
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    Arc::new(
+        RustlsClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("ring provider should support rustls safe default protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth(),
+    )
+});
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebSocketState {
@@ -930,9 +963,10 @@ impl WebSocketInner {
 impl SocketIoClient {
     async fn connect(inner: Arc<WebSocketInner>, config: WebSocketConfig) -> Result<Arc<Self>> {
         let request = build_socket_io_request(&config)?;
-        let (stream, _) = connect_async(request)
-            .await
-            .map_err(|err| LimitlessError::WebSocket(format!("websocket dial failed: {err}")))?;
+        let stream = open_socket_stream(request.uri()).await?;
+        let (stream, buffered) = perform_websocket_upgrade(stream, &request).await?;
+        let stream =
+            WebSocketStream::from_partially_read(stream, buffered, Role::Client, None).await;
         let (write, mut read) = stream.split();
 
         let open_packet = next_text_message(&mut read).await?;
@@ -1154,19 +1188,268 @@ impl SocketIoClient {
     }
 }
 
+async fn open_socket_stream(uri: &http::Uri) -> Result<MaybeTlsStream<TcpStream>> {
+    let host = uri
+        .host()
+        .ok_or_else(|| LimitlessError::WebSocket("websocket URL is missing a host".to_string()))?;
+    let scheme = uri.scheme_str().ok_or_else(|| {
+        LimitlessError::WebSocket("websocket URL is missing a scheme".to_string())
+    })?;
+    let port = uri.port_u16().unwrap_or(match scheme {
+        "wss" => 443,
+        "ws" => 80,
+        _ => 0,
+    });
+
+    if port == 0 {
+        return Err(LimitlessError::WebSocket(format!(
+            "unsupported websocket URL scheme: {scheme}"
+        )));
+    }
+
+    let socket = TcpStream::connect(format!("{host}:{port}"))
+        .await
+        .map_err(|err| LimitlessError::WebSocket(format!("websocket tcp dial failed: {err}")))?;
+    socket
+        .set_nodelay(true)
+        .map_err(|err| LimitlessError::WebSocket(format!("failed to disable Nagle: {err}")))?;
+
+    match scheme {
+        "ws" => Ok(MaybeTlsStream::Plain(socket)),
+        "wss" => {
+            let server_name = ServerName::try_from(host.to_string()).map_err(|err| {
+                LimitlessError::WebSocket(format!(
+                    "invalid websocket TLS server name {host}: {err}"
+                ))
+            })?;
+            let tls = TlsConnector::from(DEFAULT_TLS_CONFIG.clone())
+                .connect(server_name, socket)
+                .await
+                .map_err(|err| {
+                    LimitlessError::WebSocket(format!("websocket TLS handshake failed: {err}"))
+                })?;
+            Ok(MaybeTlsStream::Rustls(tls))
+        }
+        _ => Err(LimitlessError::WebSocket(format!(
+            "unsupported websocket URL scheme: {scheme}"
+        ))),
+    }
+}
+
+async fn perform_websocket_upgrade(
+    mut stream: MaybeTlsStream<TcpStream>,
+    request: &Request<()>,
+) -> Result<(MaybeTlsStream<TcpStream>, Vec<u8>)> {
+    let request_bytes = serialize_websocket_request(request)?;
+    let accept_key = request
+        .headers()
+        .get("Sec-WebSocket-Key")
+        .ok_or_else(|| {
+            LimitlessError::WebSocket("websocket request is missing Sec-WebSocket-Key".to_string())
+        })?
+        .to_str()
+        .map_err(|err| LimitlessError::WebSocket(format!("invalid websocket key header: {err}")))?
+        .to_string();
+
+    stream.write_all(&request_bytes).await.map_err(|err| {
+        LimitlessError::WebSocket(format!("failed to write websocket upgrade request: {err}"))
+    })?;
+    stream.flush().await.map_err(|err| {
+        LimitlessError::WebSocket(format!("failed to flush websocket upgrade request: {err}"))
+    })?;
+
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let read = stream.read(&mut chunk).await.map_err(|err| {
+            LimitlessError::WebSocket(format!("failed to read websocket upgrade response: {err}"))
+        })?;
+        if read == 0 {
+            return Err(LimitlessError::WebSocket(
+                "websocket closed before upgrade completed".to_string(),
+            ));
+        }
+
+        response.extend_from_slice(&chunk[..read]);
+        if response.len() > MAX_HANDSHAKE_RESPONSE_BYTES {
+            return Err(LimitlessError::WebSocket(format!(
+                "websocket upgrade response exceeded {MAX_HANDSHAKE_RESPONSE_BYTES} bytes"
+            )));
+        }
+
+        if let Some(end) = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+        {
+            let buffered = response.split_off(end);
+            validate_websocket_upgrade_response(&response, &accept_key)?;
+            return Ok((stream, buffered));
+        }
+    }
+}
+
+fn serialize_websocket_request(request: &Request<()>) -> Result<Vec<u8>> {
+    const REQUIRED_HEADERS: [&str; 5] = [
+        "Host",
+        "Connection",
+        "Upgrade",
+        "Sec-WebSocket-Version",
+        "Sec-WebSocket-Key",
+    ];
+
+    let mut output = String::new();
+    let path_and_query = request
+        .uri()
+        .path_and_query()
+        .ok_or_else(|| {
+            LimitlessError::WebSocket("websocket request URL is missing a path".to_string())
+        })?
+        .as_str();
+
+    write!(&mut output, "GET {path_and_query} HTTP/1.1\r\n").map_err(|err| {
+        LimitlessError::WebSocket(format!("failed to build websocket request line: {err}"))
+    })?;
+
+    for header in REQUIRED_HEADERS {
+        let value = request.headers().get(header).ok_or_else(|| {
+            LimitlessError::WebSocket(format!(
+                "websocket request is missing required header {header}"
+            ))
+        })?;
+        write!(
+            &mut output,
+            "{header}: {}\r\n",
+            value.to_str().map_err(|err| {
+                LimitlessError::WebSocket(format!(
+                    "websocket header {header} is not valid UTF-8: {err}"
+                ))
+            })?
+        )
+        .map_err(|err| {
+            LimitlessError::WebSocket(format!("failed to write websocket header {header}: {err}"))
+        })?;
+    }
+
+    for (name, value) in request.headers() {
+        if REQUIRED_HEADERS
+            .iter()
+            .any(|required| name.as_str().eq_ignore_ascii_case(required))
+        {
+            continue;
+        }
+
+        let display_name = match name.as_str() {
+            "origin" => "Origin",
+            "sec-websocket-protocol" => "Sec-WebSocket-Protocol",
+            other => other,
+        };
+        write!(
+            &mut output,
+            "{display_name}: {}\r\n",
+            value.to_str().map_err(|err| {
+                LimitlessError::WebSocket(format!(
+                    "websocket header {display_name} is not valid UTF-8: {err}"
+                ))
+            })?
+        )
+        .map_err(|err| {
+            LimitlessError::WebSocket(format!(
+                "failed to write websocket header {display_name}: {err}"
+            ))
+        })?;
+    }
+
+    output.push_str("\r\n");
+    Ok(output.into_bytes())
+}
+
+fn validate_websocket_upgrade_response(response: &[u8], request_key: &str) -> Result<()> {
+    let response_text = std::str::from_utf8(response).map_err(|err| {
+        LimitlessError::WebSocket(format!(
+            "websocket upgrade response is not valid UTF-8: {err}"
+        ))
+    })?;
+    let mut lines = response_text.split("\r\n");
+    let status_line = lines.next().unwrap_or_default();
+    let status_code = status_line.split_whitespace().nth(1).ok_or_else(|| {
+        LimitlessError::WebSocket(format!(
+            "websocket upgrade response is missing an HTTP status: {status_line}"
+        ))
+    })?;
+
+    if status_code != "101" {
+        return Err(LimitlessError::WebSocket(format!(
+            "websocket upgrade rejected: {status_line}"
+        )));
+    }
+
+    let mut upgrade_ok = false;
+    let mut connection_ok = false;
+    let mut accept_ok = false;
+    let expected_accept = derive_accept_key(request_key.as_bytes());
+
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            let value = value.trim();
+            match name.trim().to_ascii_lowercase().as_str() {
+                "upgrade" => {
+                    upgrade_ok = value.eq_ignore_ascii_case("websocket");
+                }
+                "connection" => {
+                    connection_ok = value
+                        .split(',')
+                        .any(|token| token.trim().eq_ignore_ascii_case("upgrade"));
+                }
+                "sec-websocket-accept" => {
+                    accept_ok = value == expected_accept;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if !upgrade_ok {
+        return Err(LimitlessError::WebSocket(
+            "websocket upgrade response is missing Upgrade: websocket".to_string(),
+        ));
+    }
+    if !connection_ok {
+        return Err(LimitlessError::WebSocket(
+            "websocket upgrade response is missing Connection: Upgrade".to_string(),
+        ));
+    }
+    if !accept_ok {
+        return Err(LimitlessError::WebSocket(
+            "websocket upgrade response has an invalid Sec-WebSocket-Accept header".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn build_socket_io_request(config: &WebSocketConfig) -> Result<Request<()>> {
     let url = format!("{}{}", config.url.trim_end_matches('/'), SOCKET_IO_PATH);
     let headers =
         build_websocket_headers(config.api_key.as_deref(), config.hmac_credentials.as_ref())?;
 
-    let mut builder = Request::builder().method("GET").uri(url);
+    let mut request = url.into_client_request().map_err(|err| {
+        LimitlessError::WebSocket(format!("failed to build websocket client request: {err}"))
+    })?;
+    request.headers_mut().insert(
+        "Sec-WebSocket-Key",
+        HeaderValue::from_str(&generate_key()).map_err(|err| {
+            LimitlessError::WebSocket(format!("failed to generate websocket key: {err}"))
+        })?,
+    );
     for (name, value) in headers.iter() {
-        builder = builder.header(name, value.clone());
+        request.headers_mut().insert(name, value.clone());
     }
 
-    builder.body(()).map_err(|err| {
-        LimitlessError::WebSocket(format!("failed to build websocket request: {err}"))
-    })
+    Ok(request)
 }
 
 fn build_websocket_headers(
@@ -1302,6 +1585,10 @@ fn parse_socketio_event(payload: &str) -> Result<(String, Value)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
 
     #[test]
     fn websocket_headers_include_sdk_tracking() {
@@ -1326,6 +1613,96 @@ mod tests {
             Some("token-123")
         );
         assert!(headers.get("lmts-signature").is_some());
+    }
+
+    #[test]
+    fn websocket_request_includes_protocol_handshake_headers() {
+        let request =
+            build_socket_io_request(&WebSocketConfig::default()).expect("request should build");
+        let headers = request.headers();
+
+        assert!(headers.get("sec-websocket-key").is_some());
+        assert!(headers.get("sec-websocket-version").is_some());
+        assert!(headers.get("connection").is_some());
+        assert!(headers.get("upgrade").is_some());
+    }
+
+    #[tokio::test]
+    async fn websocket_manual_upgrade_writes_protocol_headers_on_the_wire() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("server should accept");
+            let mut buf = vec![0_u8; 4096];
+            let mut request = Vec::new();
+
+            loop {
+                let read = stream
+                    .read(&mut buf)
+                    .await
+                    .expect("server should read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request_text = String::from_utf8(request.clone()).expect("request should be utf8");
+            let key_line = request_text
+                .lines()
+                .find(|line| line.starts_with("Sec-WebSocket-Key: "))
+                .expect("request should contain Sec-WebSocket-Key");
+            let key = key_line
+                .split_once(": ")
+                .map(|(_, value)| value.trim())
+                .expect("key header should contain a value")
+                .to_string();
+            let accept = derive_accept_key(key.as_bytes());
+
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 101 Switching Protocols\r\n\
+Upgrade: websocket\r\n\
+Connection: Upgrade\r\n\
+Sec-WebSocket-Accept: {accept}\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("server should write response");
+            request
+        });
+
+        let request = build_socket_io_request(&WebSocketConfig {
+            url: format!("ws://{}", addr),
+            ..WebSocketConfig::default()
+        })
+        .expect("request should build");
+
+        let stream = open_socket_stream(request.uri())
+            .await
+            .expect("socket should connect");
+        let (_stream, buffered) = perform_websocket_upgrade(stream, &request)
+            .await
+            .expect("manual websocket upgrade should succeed");
+        assert!(buffered.is_empty());
+
+        let request_bytes = server.await.expect("server task should complete");
+        let request_text = String::from_utf8(request_bytes).expect("request should be utf8");
+
+        assert!(request_text.contains("Sec-WebSocket-Key: "));
+        assert!(request_text.contains("Sec-WebSocket-Version: 13"));
+        assert!(request_text.contains("Connection: Upgrade"));
+        assert!(request_text.contains("Upgrade: websocket"));
     }
 
     #[test]
