@@ -2,7 +2,27 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
-## [Unreleased]
+## [1.0.10]
+
+### Added
+
+- Added partner withdrawal-address allowlist helpers:
+  - `PartnerAccountService::add_withdrawal_address`
+  - `PartnerAccountService::delete_withdrawal_address`
+- Added typed withdrawal-address request/response models:
+  - `PartnerWithdrawalAddressInput`
+  - `PartnerWithdrawalAddressResponse`
+- Added `HttpClient::delete_with_identity` and `RetryableClient::delete_with_identity` for identity-token authenticated DELETE requests.
+- Added unit coverage for withdrawal payload serialization modes and withdrawal-address models/validation.
+- Added WebSocket subscription/event surface for order events, live sports/esports, market lifecycle, oracle price data, and system messages.
+
+### Changed
+
+- `WithdrawServerWalletParams::on_behalf_of` is now optional so callers can submit authenticated caller wallet withdrawals to explicit allowed destinations.
+- `WithdrawServerWalletParams` now omits unset optional fields from the JSON body.
+- Server-wallet withdraw docs now describe omitted-destination smart-wallet fallback and explicit whitelisted treasury destinations.
+- The server-wallet redeem/withdraw example can optionally allowlist a withdraw destination before submitting the HMAC withdraw request.
+- README, examples README, Cargo manifest, and lockfile now target `v1.0.10`.
 
 ## [1.0.9] - 2026-04-30
 

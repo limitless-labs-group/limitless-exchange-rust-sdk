@@ -43,13 +43,21 @@ impl ServerWalletService {
     ) -> Result<WithdrawServerWalletResponse> {
         self.require_hmac_auth("withdraw_server_wallet_funds")?;
         validate_amount(&params.amount)?;
-        validate_on_behalf_of(params.on_behalf_of)?;
+
+        if let Some(on_behalf_of) = params.on_behalf_of {
+            validate_on_behalf_of(on_behalf_of)?;
+        }
 
         if let Some(token) = &params.token {
             validate_address("token", token)?;
         }
         if let Some(destination) = &params.destination {
             validate_address("destination", destination)?;
+        }
+        if params.on_behalf_of.is_none() && params.destination.is_none() {
+            return Err(LimitlessError::invalid_input(
+                "on_behalf_of or destination is required for withdraw",
+            ));
         }
 
         self.client.post("/portfolio/withdraw", params).await
@@ -75,11 +83,15 @@ pub struct RedeemServerWalletParams {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WithdrawServerWalletParams {
     pub amount: String,
-    #[serde(rename = "onBehalfOf")]
-    pub on_behalf_of: i32,
-    #[serde(default)]
+    #[serde(
+        rename = "onBehalfOf",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub on_behalf_of: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
 }
 
@@ -151,7 +163,13 @@ fn validate_address(field_name: &str, value: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_amount, validate_condition_id};
+    use serde_json::json;
+
+    use crate::{hmac::HmacCredentials, http_client::HttpClient};
+
+    use super::{
+        validate_amount, validate_condition_id, ServerWalletService, WithdrawServerWalletParams,
+    };
 
     #[test]
     fn validates_server_wallet_condition_id() {
@@ -167,5 +185,99 @@ mod tests {
         assert!(validate_amount("1").is_ok());
         assert!(validate_amount("0").is_err());
         assert!(validate_amount("1.5").is_err());
+    }
+
+    #[test]
+    fn serializes_withdraw_payload_modes() {
+        assert_eq!(
+            serde_json::to_value(&WithdrawServerWalletParams {
+                amount: "1000000".to_string(),
+                on_behalf_of: Some(12345),
+                token: None,
+                destination: None,
+            })
+            .unwrap(),
+            json!({
+                "amount": "1000000",
+                "onBehalfOf": 12345
+            })
+        );
+
+        assert_eq!(
+            serde_json::to_value(&WithdrawServerWalletParams {
+                amount: "1000000".to_string(),
+                on_behalf_of: None,
+                token: None,
+                destination: Some("0x0F3262730c909408042F9Da345a916dc0e1F9787".to_string()),
+            })
+            .unwrap(),
+            json!({
+                "amount": "1000000",
+                "destination": "0x0F3262730c909408042F9Da345a916dc0e1F9787"
+            })
+        );
+
+        assert_eq!(
+            serde_json::to_value(&WithdrawServerWalletParams {
+                amount: "1000000".to_string(),
+                on_behalf_of: Some(12345),
+                token: None,
+                destination: Some("0x0F3262730c909408042F9Da345a916dc0e1F9787".to_string()),
+            })
+            .unwrap(),
+            json!({
+                "amount": "1000000",
+                "onBehalfOf": 12345,
+                "destination": "0x0F3262730c909408042F9Da345a916dc0e1F9787"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn withdraw_validates_inputs_before_network() {
+        let client = HttpClient::builder()
+            .hmac_credentials(HmacCredentials {
+                token_id: "token-1".to_string(),
+                secret: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=".to_string(),
+            })
+            .build()
+            .unwrap();
+        let service = ServerWalletService::new(client);
+
+        let err = service
+            .withdraw(&WithdrawServerWalletParams {
+                amount: "1000000".to_string(),
+                on_behalf_of: Some(0),
+                token: None,
+                destination: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "on_behalf_of must be a positive integer");
+
+        let err = service
+            .withdraw(&WithdrawServerWalletParams {
+                amount: "1000000".to_string(),
+                on_behalf_of: None,
+                token: None,
+                destination: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "on_behalf_of or destination is required for withdraw"
+        );
+
+        let err = service
+            .withdraw(&WithdrawServerWalletParams {
+                amount: "1000000".to_string(),
+                on_behalf_of: Some(12345),
+                token: None,
+                destination: Some("not-an-address".to_string()),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "destination must be a valid EVM address");
     }
 }
