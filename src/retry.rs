@@ -156,6 +156,15 @@ impl RetryableClient {
         .await
     }
 
+    pub async fn delete_with_identity(&self, path: &str, identity_token: &str) -> Result<()> {
+        let client = self.client.clone();
+        self.run(move || {
+            let client = client.clone();
+            async move { client.delete_with_identity(path, identity_token).await }
+        })
+        .await
+    }
+
     pub fn set_api_key(&self, key: impl Into<String>) {
         self.client.set_api_key(key);
     }

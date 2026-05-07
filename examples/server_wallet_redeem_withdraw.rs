@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use limitless_exchange_rust_sdk::{
     Client, CreatePartnerAccountInput, DeriveApiTokenInput, HmacCredentials,
-    RedeemServerWalletParams, WithdrawServerWalletParams, SCOPE_ACCOUNT_CREATION,
-    SCOPE_DELEGATED_SIGNING, SCOPE_TRADING, SCOPE_WITHDRAWAL,
+    PartnerWithdrawalAddressInput, RedeemServerWalletParams, WithdrawServerWalletParams,
+    SCOPE_ACCOUNT_CREATION, SCOPE_DELEGATED_SIGNING, SCOPE_TRADING, SCOPE_WITHDRAWAL,
 };
 
 #[tokio::main]
@@ -117,20 +117,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let amount = support::require_env("LIMITLESS_WITHDRAW_AMOUNT");
     let destination = support::optional_env("LIMITLESS_WITHDRAW_DESTINATION");
+    let allowlist_destination =
+        support::env_flag("LIMITLESS_ALLOWLIST_WITHDRAW_DESTINATION", false);
+    let destination_label =
+        support::optional_env_with_fallback("LIMITLESS_WITHDRAW_DESTINATION_LABEL", "treasury");
     let token = support::optional_env("LIMITLESS_WITHDRAW_TOKEN");
 
     println!(
         "Withdrawing amount={} token={} destination={}",
         amount,
         support::empty_fallback(token.as_deref(), "(default token)"),
-        support::empty_fallback(destination.as_deref(), "(authenticated account default)")
+        support::empty_fallback(
+            destination.as_deref(),
+            "(default: authenticated smart wallet when present, otherwise account)"
+        )
     );
+
+    if let Some(destination_address) = destination.as_deref().filter(|_| allowlist_destination) {
+        println!(
+            "Allowlisting withdraw destination={} label={}",
+            destination_address, destination_label
+        );
+        let withdrawal_address = bootstrap
+            .partner_accounts
+            .add_withdrawal_address(
+                &identity_token,
+                &PartnerWithdrawalAddressInput {
+                    address: destination_address.to_string(),
+                    label: Some(destination_label),
+                },
+            )
+            .await?;
+        println!(
+            "Withdrawal destination allowlisted: id={} profileId={} destination={} label={}",
+            withdrawal_address.id,
+            withdrawal_address.profile_id,
+            withdrawal_address.destination_address,
+            withdrawal_address.label
+        );
+    }
 
     let withdraw = scoped
         .server_wallets
         .withdraw(&WithdrawServerWalletParams {
             amount,
-            on_behalf_of,
+            on_behalf_of: Some(on_behalf_of),
             token,
             destination,
         })

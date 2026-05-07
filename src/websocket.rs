@@ -84,6 +84,11 @@ pub enum SubscriptionChannel {
     SubscribeMarketPrices,
     SubscribePositions,
     SubscribeTransactions,
+    SubscribeOrderEvents,
+    SubscribeLiveSports,
+    SubscribeLiveEsports,
+    SubscribeMarketLifecycle,
+    UnsubscribeMarketLifecycle,
 }
 
 impl SubscriptionChannel {
@@ -98,6 +103,11 @@ impl SubscriptionChannel {
             Self::SubscribeMarketPrices => "subscribe_market_prices",
             Self::SubscribePositions => "subscribe_positions",
             Self::SubscribeTransactions => "subscribe_transactions",
+            Self::SubscribeOrderEvents => "subscribe_order_events",
+            Self::SubscribeLiveSports => "subscribe_live_sports",
+            Self::SubscribeLiveEsports => "subscribe_live_esports",
+            Self::SubscribeMarketLifecycle => "subscribe_market_lifecycle",
+            Self::UnsubscribeMarketLifecycle => "unsubscribe_market_lifecycle",
         }
     }
 }
@@ -283,6 +293,16 @@ pub struct NewPriceData {
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     pub timestamp: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OraclePriceData {
+    #[serde(rename = "marketAddress", default)]
+    pub market_address: Option<String>,
+    #[serde(rename = "marketSlug")]
+    pub market_slug: String,
+    pub timestamp: i64,
+    pub value: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -732,6 +752,13 @@ impl WebSocketClient {
         self.on_typed("newPriceData", "price data", handler)
     }
 
+    pub fn on_oracle_price_data<F>(&self, handler: F) -> u64
+    where
+        F: Fn(OraclePriceData) + Send + Sync + 'static,
+    {
+        self.on_typed("oraclePriceData", "oracle price data", handler)
+    }
+
     pub fn on_trade<F>(&self, handler: F) -> u64
     where
         F: Fn(TradeEvent) + Send + Sync + 'static,
@@ -744,6 +771,13 @@ impl WebSocketClient {
         F: Fn(OrderUpdate) + Send + Sync + 'static,
     {
         self.on_typed("order", "order event", handler)
+    }
+
+    pub fn on_order_event<F>(&self, handler: F) -> u64
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        self.on("orderEvent", handler)
     }
 
     pub fn on_fill<F>(&self, handler: F) -> u64
@@ -779,6 +813,27 @@ impl WebSocketClient {
         F: Fn(MarketResolvedEvent) + Send + Sync + 'static,
     {
         self.on_typed("marketResolved", "marketResolved event", handler)
+    }
+
+    pub fn on_live_sports_update<F>(&self, handler: F) -> u64
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        self.on("live_sports_update", handler)
+    }
+
+    pub fn on_live_esports_update<F>(&self, handler: F) -> u64
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        self.on("live_esports_update", handler)
+    }
+
+    pub fn on_system<F>(&self, handler: F) -> u64
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        self.on("system", handler)
     }
 
     fn on_typed<T, F>(&self, event: &str, label: &'static str, handler: F) -> u64
@@ -1522,6 +1577,11 @@ fn channel_from_key(key: &str) -> Option<SubscriptionChannel> {
         "subscribe_market_prices" => Some(SubscriptionChannel::SubscribeMarketPrices),
         "subscribe_positions" => Some(SubscriptionChannel::SubscribePositions),
         "subscribe_transactions" => Some(SubscriptionChannel::SubscribeTransactions),
+        "subscribe_order_events" => Some(SubscriptionChannel::SubscribeOrderEvents),
+        "subscribe_live_sports" => Some(SubscriptionChannel::SubscribeLiveSports),
+        "subscribe_live_esports" => Some(SubscriptionChannel::SubscribeLiveEsports),
+        "subscribe_market_lifecycle" => Some(SubscriptionChannel::SubscribeMarketLifecycle),
+        "unsubscribe_market_lifecycle" => Some(SubscriptionChannel::UnsubscribeMarketLifecycle),
         _ => None,
     }
 }
@@ -1533,6 +1593,7 @@ fn requires_websocket_auth(channel: SubscriptionChannel) -> bool {
             | SubscriptionChannel::Fills
             | SubscriptionChannel::SubscribePositions
             | SubscriptionChannel::SubscribeTransactions
+            | SubscriptionChannel::SubscribeOrderEvents
     )
 }
 
@@ -1749,5 +1810,45 @@ Sec-WebSocket-Accept: {accept}\r\n\r\n"
     #[test]
     fn unknown_subscription_key_is_rejected() {
         assert!(channel_from_key("mystery|{}").is_none());
+    }
+
+    #[test]
+    fn websocket_channel_inventory_includes_server_subscription_events() {
+        let channels = [
+            (
+                SubscriptionChannel::SubscribeOrderEvents,
+                "subscribe_order_events",
+                true,
+            ),
+            (
+                SubscriptionChannel::SubscribeLiveSports,
+                "subscribe_live_sports",
+                false,
+            ),
+            (
+                SubscriptionChannel::SubscribeLiveEsports,
+                "subscribe_live_esports",
+                false,
+            ),
+            (
+                SubscriptionChannel::SubscribeMarketLifecycle,
+                "subscribe_market_lifecycle",
+                false,
+            ),
+            (
+                SubscriptionChannel::UnsubscribeMarketLifecycle,
+                "unsubscribe_market_lifecycle",
+                false,
+            ),
+        ];
+
+        for (channel, wire_name, requires_auth) in channels {
+            assert_eq!(channel.as_str(), wire_name);
+            assert_eq!(
+                channel_from_key(&format!("{wire_name}|{{}}")),
+                Some(channel)
+            );
+            assert_eq!(requires_websocket_auth(channel), requires_auth);
+        }
     }
 }

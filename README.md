@@ -1,6 +1,6 @@
 # Limitless Exchange Rust SDK
 
-**v1.0.9** | Rust SDK parity with the existing Limitless SDK surface
+**v1.0.10** | Rust SDK parity with the existing Limitless SDK surface
 
 Rust SDK for interacting with the Limitless Exchange API.
 
@@ -50,7 +50,7 @@ This is the first full-surface parity pass. The crate is implemented against the
 
 ```toml
 [dependencies]
-limitless-exchange-rust-sdk = "1.0.9"
+limitless-exchange-rust-sdk = "1.0.10"
 ```
 
 ## Authentication Modes
@@ -215,3 +215,70 @@ println!("allowance ready: {}", allowances.ready);
 ```
 
 Poll `check_allowances` first. If `ready` is false and one or more targets are `missing` or `failed` with `retryable = true`, call `retry_allowances`, then poll `check_allowances` again after a short delay. Retry `429` and `409` responses are returned as `LimitlessError::Api`; inspect `err.status`, and for `429` read `retryAfterSeconds` from `err.data`.
+
+### Server Wallet Redeem & Withdraw
+
+Use `server_wallets.redeem_positions` and `server_wallets.withdraw` only for server-managed wallets created in delegated-signing partner flows with `create_server_wallet = true`.
+
+- `redeem_positions` calls `POST /portfolio/redeem`
+- `withdraw` calls `POST /portfolio/withdraw`
+- both operations require HMAC-scoped API-token auth
+- `withdraw` also requires the `withdrawal` scope
+- set `on_behalf_of` to the delegated child-profile id when withdrawing child server-wallet funds
+- omit `on_behalf_of` only when withdrawing the authenticated caller's own server wallet to an explicit `destination`
+- omit `destination` to use the API default: authenticated partner smart wallet when present, otherwise authenticated partner account
+- pass `destination` to withdraw directly to the authenticated partner account, authenticated partner smart wallet, or an active withdrawal address allowlisted on the authenticated partner profile
+- `partner_accounts.add_withdrawal_address` and `partner_accounts.delete_withdrawal_address` manage the allowlist with Privy identity-token auth; API-token auth is not used for those allowlist endpoints
+
+```rust
+use limitless_exchange_rust_sdk::{
+    Client, HmacCredentials, PartnerWithdrawalAddressInput, WithdrawServerWalletParams,
+};
+
+let sdk = Client::from_http_client(
+    Client::builder()
+        .hmac_credentials(HmacCredentials {
+            token_id: std::env::var("LIMITLESS_API_TOKEN_ID")?,
+            secret: std::env::var("LIMITLESS_API_TOKEN_SECRET")?,
+        })
+        .build()?,
+)?;
+
+let identity_token = std::env::var("LIMITLESS_IDENTITY_TOKEN")?;
+let treasury_address = "0x0F3262730c909408042F9Da345a916dc0e1F9787";
+
+sdk.partner_accounts
+    .add_withdrawal_address(
+        &identity_token,
+        &PartnerWithdrawalAddressInput {
+            address: treasury_address.to_string(),
+            label: Some("treasury".to_string()),
+        },
+    )
+    .await?;
+
+let child_withdraw = sdk
+    .server_wallets
+    .withdraw(&WithdrawServerWalletParams {
+        amount: "5000000".to_string(),
+        on_behalf_of: Some(352),
+        token: None,
+        destination: Some(treasury_address.to_string()),
+    })
+    .await?;
+
+let own_wallet_withdraw = sdk
+    .server_wallets
+    .withdraw(&WithdrawServerWalletParams {
+        amount: "5000000".to_string(),
+        on_behalf_of: None,
+        token: None,
+        destination: Some(treasury_address.to_string()),
+    })
+    .await?;
+
+println!(
+    "withdraws: {} {}",
+    child_withdraw.envelope.transaction_id, own_wallet_withdraw.envelope.transaction_id
+);
+```

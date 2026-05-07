@@ -258,6 +258,21 @@ impl HttpClient {
         .await
     }
 
+    pub async fn delete_with_identity(&self, path: &str, identity_token: &str) -> Result<()> {
+        self.do_request_raw(
+            Method::DELETE,
+            path,
+            Option::<&()>::None,
+            RequestOptions::default(),
+            RequestExecutionConfig {
+                extra_headers: HashMap::new(),
+                identity_token: Some(identity_token.to_string()),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn post_with_headers<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
         path: &str,
