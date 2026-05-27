@@ -1,6 +1,6 @@
 # Limitless Exchange Rust SDK
 
-**v1.0.10** | Rust SDK parity with the existing Limitless SDK surface
+**v1.0.11** | Rust SDK parity with the existing Limitless SDK surface
 
 Rust SDK for interacting with the Limitless Exchange API.
 
@@ -50,7 +50,7 @@ This is the first full-surface parity pass. The crate is implemented against the
 
 ```toml
 [dependencies]
-limitless-exchange-rust-sdk = "1.0.10"
+limitless-exchange-rust-sdk = "1.0.11"
 ```
 
 ## Authentication Modes
@@ -103,6 +103,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let positions = sdk.portfolio.get_positions().await?;
     println!("CLOB positions: {}", positions.clob.len());
+
+    let profile = sdk.portfolio.get_current_profile().await?;
+    println!("Profile: {} {}", profile.id, profile.account);
 
     let history = sdk.portfolio.get_user_history(None, Some(20)).await?;
     println!("History entries: {}", history.data.len());
@@ -188,6 +191,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   - positions and transactions: [examples/websocket_positions.rs](examples/websocket_positions.rs)
 
 ### Partner Server-Wallet Allowances
+
+Use `partner_accounts.list_accounts` to list partner-owned sub-accounts, or pass `account` to recover a specific child profile by address. This endpoint requires scoped HMAC credentials with the `account_creation` scope. The API caps `limit` at 25 and rejects `x-on-behalf-of` on this route.
+
+```rust
+use limitless_exchange_rust_sdk::{Client, HmacCredentials, ListPartnerAccountsParams};
+
+let sdk = Client::from_http_client(
+    Client::builder()
+        .hmac_credentials(HmacCredentials {
+            token_id: std::env::var("LIMITLESS_API_TOKEN_ID")?,
+            secret: std::env::var("LIMITLESS_API_TOKEN_SECRET")?,
+        })
+        .build()?,
+)?;
+
+let accounts = sdk
+    .partner_accounts
+    .list_accounts(&ListPartnerAccountsParams {
+        limit: Some(25),
+        page: Some(1),
+        ..Default::default()
+    })
+    .await?;
+
+let recovered = sdk
+    .partner_accounts
+    .list_accounts(&ListPartnerAccountsParams {
+        account: Some("0xChildAccount".to_string()),
+        limit: Some(25),
+        page: Some(1),
+    })
+    .await?;
+
+println!("accounts: {} recovered: {}", accounts.data.len(), recovered.data.len());
+```
 
 Use `partner_accounts.check_allowances(profile_id)` and `partner_accounts.retry_allowances(profile_id)` only for partner child profiles created with `create_server_wallet = true`. These endpoints require scoped HMAC credentials derived with `SCOPE_ACCOUNT_CREATION` and `SCOPE_DELEGATED_SIGNING`.
 

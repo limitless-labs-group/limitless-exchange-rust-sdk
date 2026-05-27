@@ -16,9 +16,12 @@ impl PortfolioFetcher {
 
     pub async fn get_profile(&self, address: &str) -> Result<UserProfile> {
         self.client.require_auth("get_profile")?;
-        self.client
-            .get(&format!("/profiles/{}", urlencoding::encode(address)))
-            .await
+        self.client.get(&profile_path(address)).await
+    }
+
+    pub async fn get_current_profile(&self) -> Result<UserProfile> {
+        self.client.require_auth("get_current_profile")?;
+        self.client.get(current_profile_path()).await
     }
 
     pub async fn get_positions(&self) -> Result<PortfolioPositionsResponse> {
@@ -48,6 +51,14 @@ impl PortfolioFetcher {
         let url = history_path(cursor, limit);
         self.client.get(&url).await
     }
+}
+
+fn profile_path(address: &str) -> String {
+    format!("/profiles/{}", urlencoding::encode(address))
+}
+
+fn current_profile_path() -> &'static str {
+    "/profiles/me"
 }
 
 fn history_path(cursor: Option<&str>, limit: Option<u32>) -> String {
@@ -381,7 +392,30 @@ pub struct HistoryResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{errors::LimitlessError, http_client::HttpClient};
     use serde_json::json;
+
+    #[test]
+    fn profile_paths_match_api_routes() {
+        assert_eq!(
+            profile_path("0xa00BCB04073B243E8A55f3B5899AefF596bF17C6"),
+            "/profiles/0xa00BCB04073B243E8A55f3B5899AefF596bF17C6"
+        );
+        assert_eq!(profile_path("0xabc def"), "/profiles/0xabc%20def");
+        assert_eq!(current_profile_path(), "/profiles/me");
+    }
+
+    #[tokio::test]
+    async fn current_profile_requires_auth_before_network() {
+        let fetcher = PortfolioFetcher::new(HttpClient::builder().build().unwrap());
+        let err = fetcher.get_current_profile().await.unwrap_err();
+        match err {
+            LimitlessError::AuthenticationRequired { operation } => {
+                assert_eq!(operation, "get_current_profile");
+            }
+            other => panic!("expected authentication error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn history_path_uses_empty_cursor_and_default_limit_on_first_page() {
