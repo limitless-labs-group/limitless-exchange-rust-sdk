@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use std::env;
 
-use limitless_exchange_rust_sdk::{Client, OrderArgs, OrderType, Side, GtcOrderArgs};
+use limitless_exchange_rust_sdk::{Client, GtcOrderArgs, OrderArgs, OrderType, Side};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -167,6 +167,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### Optional Receive Window
+
+Order creation can opt into API receive-window freshness checks with `ReceiveWindowOptions`. These values are sent as top-level `POST /orders` fields named `timestamp` and `recvWindow`; they are not included in the signed EIP-712 order payload. Existing `create_order` calls are unchanged and omit both fields.
+
+```rust
+use limitless_exchange_rust_sdk::{
+    CreateOrderParams, GtcOrderArgs, OrderArgs, OrderType, ReceiveWindowOptions, Side,
+};
+
+let order = order_client
+    .create_order_with_receive_window(
+        CreateOrderParams {
+            order_type: OrderType::Gtc,
+            market_slug: market.slug.clone(),
+            args: OrderArgs::from(GtcOrderArgs {
+                token_id: market.outcomes[0].token_id.clone(),
+                side: Side::Buy,
+                price: 0.51,
+                size: 10.0,
+                expiration: None,
+                nonce: None,
+                taker: None,
+                post_only: false,
+            }),
+        },
+        ReceiveWindowOptions {
+            timestamp: None,
+            recv_window: Some(1500),
+        },
+    )
+    .await?;
+```
+
+`recv_window` must be between `1` and `10000` milliseconds. When `recv_window` is supplied without `timestamp`, the SDK stamps the current Unix time in milliseconds. Keep trading hosts NTP-synced; server clock skew tolerance is about one second. Do not retry a `425 Too Early` with the same payload; build a fresh order instead.
 
 ## Workflow Guide
 

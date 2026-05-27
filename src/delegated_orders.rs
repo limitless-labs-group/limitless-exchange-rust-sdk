@@ -3,8 +3,8 @@ use crate::{
     http_client::HttpClient,
     logger::{noop_logger, SharedLogger},
     orders::{
-        post_only_from_args, CancelResponse, OrderArgs, OrderBuilder, OrderResponse, OrderType,
-        Side, SignatureType,
+        normalize_receive_window_options, post_only_from_args, CancelResponse, OrderArgs,
+        OrderBuilder, OrderResponse, OrderType, ReceiveWindowOptions, Side, SignatureType,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -26,12 +26,35 @@ impl DelegatedOrderService {
     }
 
     pub async fn create_order(&self, params: CreateDelegatedOrderParams) -> Result<OrderResponse> {
+        self.create_order_internal(params, None).await
+    }
+
+    /// Creates a delegated order with optional receive-window freshness controls.
+    ///
+    /// `timestamp` and `recv_window` are serialized as top-level `POST /orders`
+    /// fields only. They are not part of the delegated order body.
+    pub async fn create_order_with_receive_window(
+        &self,
+        params: CreateDelegatedOrderParams,
+        receive_window: ReceiveWindowOptions,
+    ) -> Result<OrderResponse> {
+        self.create_order_internal(params, Some(receive_window))
+            .await
+    }
+
+    async fn create_order_internal(
+        &self,
+        params: CreateDelegatedOrderParams,
+        receive_window: Option<ReceiveWindowOptions>,
+    ) -> Result<OrderResponse> {
         self.client.require_auth("CreateDelegatedOrder")?;
         if params.on_behalf_of <= 0 {
             return Err(LimitlessError::invalid_input(
                 "OnBehalfOf must be a positive integer",
             ));
         }
+        let receive_window =
+            normalize_receive_window_options(receive_window, crate::orders::current_unix_ms)?;
 
         let fee_rate_bps = if params.fee_rate_bps <= 0 {
             DEFAULT_DELEGATED_FEE_RATE_BPS
@@ -66,6 +89,8 @@ impl DelegatedOrderService {
             owner_id: params.on_behalf_of,
             on_behalf_of: Some(params.on_behalf_of),
             post_only: post_only_from_args(&params.args),
+            timestamp: receive_window.timestamp,
+            recv_window: receive_window.recv_window,
         };
 
         self.client.post("/orders", &payload).await
@@ -179,11 +204,60 @@ pub struct CreateOrderRequest {
     pub on_behalf_of: Option<i32>,
     #[serde(rename = "postOnly", skip_serializing_if = "Option::is_none")]
     pub post_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    #[serde(rename = "recvWindow", skip_serializing_if = "Option::is_none")]
+    pub recv_window: Option<i64>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn test_delegated_order_params() -> CreateDelegatedOrderParams {
+        CreateDelegatedOrderParams {
+            market_slug: "market".to_string(),
+            order_type: OrderType::Gtc,
+            on_behalf_of: 326,
+            fee_rate_bps: 300,
+            args: crate::orders::GtcOrderArgs {
+                token_id: "123".to_string(),
+                side: Side::Buy,
+                price: 0.5,
+                size: 1.0,
+                expiration: None,
+                nonce: None,
+                taker: None,
+                post_only: false,
+            }
+            .into(),
+        }
+    }
+
+    fn test_order_submission() -> OrderSubmission {
+        let params = test_delegated_order_params();
+        let unsigned = OrderBuilder::new(crate::constants::ZERO_ADDRESS, 300, None)
+            .build_order(&params.args)
+            .expect("delegated order should build");
+
+        OrderSubmission {
+            salt: unsigned.salt,
+            maker: unsigned.maker,
+            signer: unsigned.signer,
+            taker: unsigned.taker,
+            token_id: unsigned.token_id,
+            maker_amount: unsigned.maker_amount,
+            taker_amount: unsigned.taker_amount,
+            expiration: unsigned.expiration,
+            nonce: unsigned.nonce,
+            fee_rate_bps: unsigned.fee_rate_bps,
+            side: unsigned.side,
+            signature_type: SignatureType::Eoa,
+            price: unsigned.price,
+            signature: None,
+        }
+    }
 
     #[test]
     fn delegated_order_requires_positive_on_behalf_of() {
@@ -220,5 +294,73 @@ mod tests {
             .expect_err("on behalf of validation should fail");
 
         assert!(error.to_string().contains("OnBehalfOf"));
+    }
+
+    #[test]
+    fn delegated_order_request_serializes_receive_window_top_level_only() {
+        let request = CreateOrderRequest {
+            order: test_order_submission(),
+            order_type: OrderType::Gtc,
+            market_slug: "market".to_string(),
+            owner_id: 326,
+            on_behalf_of: Some(326),
+            post_only: None,
+            timestamp: Some(1_770_000_000_000),
+            recv_window: Some(1500),
+        };
+
+        let value = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(value["timestamp"], json!(1_770_000_000_000_i64));
+        assert_eq!(value["recvWindow"], json!(1500));
+        assert!(value["order"].get("timestamp").is_none());
+        assert!(value["order"].get("recvWindow").is_none());
+    }
+
+    #[test]
+    fn delegated_order_request_omits_receive_window_by_default() {
+        let request = CreateOrderRequest {
+            order: test_order_submission(),
+            order_type: OrderType::Gtc,
+            market_slug: "market".to_string(),
+            owner_id: 326,
+            on_behalf_of: Some(326),
+            post_only: None,
+            timestamp: None,
+            recv_window: None,
+        };
+
+        let value = serde_json::to_value(&request).expect("request should serialize");
+        assert!(value.get("timestamp").is_none());
+        assert!(value.get("recvWindow").is_none());
+        assert!(value["order"].get("timestamp").is_none());
+        assert!(value["order"].get("recvWindow").is_none());
+    }
+
+    #[test]
+    fn delegated_order_with_receive_window_rejects_invalid_values_before_network() {
+        let service = DelegatedOrderService::new(
+            HttpClient::builder()
+                .api_key("test-api-key")
+                .build()
+                .expect("client"),
+            None,
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let error = runtime
+            .block_on(service.create_order_with_receive_window(
+                test_delegated_order_params(),
+                ReceiveWindowOptions {
+                    timestamp: None,
+                    recv_window: Some(0),
+                },
+            ))
+            .expect_err("invalid receive-window options should fail");
+
+        assert!(matches!(error, LimitlessError::InvalidInput(_)));
+        assert!(error.to_string().contains("recv_window"));
     }
 }

@@ -2,6 +2,23 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [1.0.13]
+
+### Added
+
+- Optional receive-window controls for normal and delegated order creation:
+  - `ReceiveWindowOptions::timestamp`
+  - `ReceiveWindowOptions::recv_window`, serialized as top-level `recvWindow`
+- Opt-in receive-window methods:
+  - `OrderClient::create_order_with_receive_window`
+  - `DelegatedOrderService::create_order_with_receive_window`
+- Unit coverage for omitted defaults, top-level-only payloads, automatic timestamp stamping, and invalid receive-window values before network calls.
+
+### Changed
+
+- Existing `create_order` method signatures are unchanged, preserving downstream struct-literal compatibility.
+- README, examples README, Cargo manifest, and lockfile now target `v1.0.13`.
+
 ## [1.0.11]
 
 ### Added
