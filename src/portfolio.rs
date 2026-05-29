@@ -21,6 +21,17 @@ impl PortfolioFetcher {
             .await
     }
 
+    /// Fetch the authenticated caller's own private profile.
+    ///
+    /// Resolves the profile from the request credentials (HMAC token or API
+    /// key) via `GET /profiles/me`, so no address is required. Use
+    /// [`get_profile`](Self::get_profile) when you need a specific account's
+    /// profile by address.
+    pub async fn get_current_profile(&self) -> Result<UserProfile> {
+        self.client.require_auth("get_current_profile")?;
+        self.client.get("/profiles/me").await
+    }
+
     pub async fn get_positions(&self) -> Result<PortfolioPositionsResponse> {
         self.client.require_auth("get_positions")?;
         self.client.get("/portfolio/positions").await

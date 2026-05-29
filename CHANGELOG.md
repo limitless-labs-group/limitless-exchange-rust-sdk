@@ -2,6 +2,12 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `PortfolioFetcher::get_current_profile` — fetches the authenticated caller's own private profile via `GET /profiles/me`, resolving the account from the request credentials so no address is required. Brings the Rust SDK to parity with the Go (`GetCurrentProfile`) and Python (`get_current_profile`) SDKs.
+
 ## [1.0.10]
 
 ### Added
