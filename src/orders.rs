@@ -813,10 +813,7 @@ impl OrderClient {
         self.logger
             .info("Fetching user profile for order client initialization");
 
-        let profile: UserProfile = self
-            .portfolio_fetcher
-            .get_profile(self.signer.address())
-            .await?;
+        let profile: UserProfile = self.portfolio_fetcher.get_current_profile().await?;
         let fee_rate_bps = profile
             .rank
             .as_ref()

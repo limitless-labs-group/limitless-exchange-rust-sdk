@@ -17,6 +17,8 @@ All notable changes to the Limitless Exchange Rust SDK will be documented in thi
 ### Changed
 
 - Existing `create_order` method signatures are unchanged, preserving downstream struct-literal compatibility.
+- `OrderClient` profile initialization now uses `PortfolioFetcher::get_current_profile` (`GET /profiles/me`) instead of address-based profile lookup.
+- This release branch is based on the merged `v1.0.11` profile/me, partner account listing, and supported websocket channel cleanup changes.
 - README, examples README, Cargo manifest, and lockfile now target `v1.0.13`.
 
 ## [1.0.11]
