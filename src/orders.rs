@@ -46,6 +46,7 @@ static LAST_ORDER_SALT: AtomicI64 = AtomicI64::new(0);
 
 const DEFAULT_PRICE_TICK: f64 = 0.001;
 const DEFAULT_FEE_RATE_BPS: i32 = 300;
+const MAX_RECV_WINDOW_MS: i64 = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
@@ -191,6 +192,18 @@ pub struct SignedOrder {
     pub signature: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReceiveWindowOptions {
+    /// Client-stamped order creation time in Unix milliseconds.
+    ///
+    /// This is sent as a top-level `POST /orders` field and is not signed.
+    pub timestamp: Option<i64>,
+    /// Maximum accepted request staleness in milliseconds.
+    ///
+    /// This is sent as top-level `recvWindow` and is not signed.
+    pub recv_window: Option<i64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NewOrderPayload {
     pub order: SignedOrder,
@@ -202,6 +215,10 @@ pub struct NewOrderPayload {
     pub owner_id: i32,
     #[serde(rename = "postOnly", skip_serializing_if = "Option::is_none")]
     pub post_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    #[serde(rename = "recvWindow", skip_serializing_if = "Option::is_none")]
+    pub recv_window: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -647,7 +664,29 @@ impl OrderClient {
     }
 
     pub async fn create_order(&self, params: CreateOrderParams) -> Result<OrderResponse> {
+        self.create_order_internal(params, None).await
+    }
+
+    /// Creates an order with optional receive-window freshness controls.
+    ///
+    /// `timestamp` and `recv_window` are serialized as top-level `POST /orders`
+    /// fields only. They are not part of the EIP-712 signed order payload.
+    pub async fn create_order_with_receive_window(
+        &self,
+        params: CreateOrderParams,
+        receive_window: ReceiveWindowOptions,
+    ) -> Result<OrderResponse> {
+        self.create_order_internal(params, Some(receive_window))
+            .await
+    }
+
+    async fn create_order_internal(
+        &self,
+        params: CreateOrderParams,
+        receive_window: Option<ReceiveWindowOptions>,
+    ) -> Result<OrderResponse> {
         self.client.require_auth("CreateOrder")?;
+        let receive_window = normalize_receive_window_options(receive_window, current_unix_ms)?;
         let user_data = self.ensure_user_data().await?;
         let signing_config = self
             .resolve_signing_config_for_market(&params.market_slug)
@@ -677,6 +716,8 @@ impl OrderClient {
             market_slug: params.market_slug,
             owner_id: user_data.user_id,
             post_only: post_only_from_args(&params.args),
+            timestamp: receive_window.timestamp,
+            recv_window: receive_window.recv_window,
         };
 
         self.client.post("/orders", &payload).await
@@ -772,10 +813,7 @@ impl OrderClient {
         self.logger
             .info("Fetching user profile for order client initialization");
 
-        let profile: UserProfile = self
-            .portfolio_fetcher
-            .get_profile(self.signer.address())
-            .await?;
+        let profile: UserProfile = self.portfolio_fetcher.get_current_profile().await?;
         let fee_rate_bps = profile
             .rank
             .as_ref()
@@ -831,6 +869,40 @@ impl OrderClient {
             "market {market_slug} does not expose venue.exchange and no fallback signing contract is configured"
         )))
     }
+}
+
+pub(crate) fn normalize_receive_window_options(
+    options: Option<ReceiveWindowOptions>,
+    now_ms: impl FnOnce() -> i64,
+) -> Result<ReceiveWindowOptions> {
+    let mut normalized = options.unwrap_or_default();
+
+    if matches!(normalized.timestamp, Some(timestamp) if timestamp < 0) {
+        return Err(LimitlessError::invalid_input(
+            "timestamp must be a non-negative integer",
+        ));
+    }
+
+    if let Some(recv_window) = normalized.recv_window {
+        if !(1..=MAX_RECV_WINDOW_MS).contains(&recv_window) {
+            return Err(LimitlessError::invalid_input(format!(
+                "recv_window must be between 1 and {MAX_RECV_WINDOW_MS} milliseconds"
+            )));
+        }
+    }
+
+    if normalized.recv_window.is_some() && normalized.timestamp.is_none() {
+        normalized.timestamp = Some(now_ms());
+    }
+
+    Ok(normalized)
+}
+
+pub(crate) fn current_unix_ms() -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_millis(0));
+    i64::try_from(now.as_millis()).unwrap_or(i64::MAX)
 }
 
 pub fn validate_order_args(args: &OrderArgs) -> Result<()> {
@@ -1510,6 +1582,161 @@ mod tests {
             signature_type: SignatureType::Eoa,
             price: Some(0.381),
         }
+    }
+
+    fn test_signed_order() -> SignedOrder {
+        let order = test_unsigned_order_for_signer();
+        SignedOrder {
+            salt: order.salt,
+            maker: order.maker,
+            signer: order.signer,
+            taker: order.taker,
+            token_id: order.token_id,
+            maker_amount: order.maker_amount,
+            taker_amount: order.taker_amount,
+            expiration: order.expiration,
+            nonce: order.nonce,
+            fee_rate_bps: order.fee_rate_bps,
+            side: order.side,
+            signature_type: order.signature_type,
+            price: order.price,
+            signature: EXPECTED_ORDER_SIGNATURE.to_string(),
+        }
+    }
+
+    fn test_create_order_params() -> CreateOrderParams {
+        CreateOrderParams {
+            order_type: OrderType::Gtc,
+            market_slug: "test-market".to_string(),
+            args: OrderArgs::Gtc(GtcOrderArgs {
+                token_id: "12345".to_string(),
+                side: Side::Buy,
+                price: 0.381,
+                size: 1.234,
+                expiration: None,
+                nonce: None,
+                taker: None,
+                post_only: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn receive_window_normalization_omits_defaults_and_auto_stamps() {
+        let empty = normalize_receive_window_options(None, || {
+            panic!("clock should not be read without recv_window")
+        })
+        .expect("empty receive-window options should normalize");
+        assert_eq!(empty, ReceiveWindowOptions::default());
+
+        let timestamp_only = normalize_receive_window_options(
+            Some(ReceiveWindowOptions {
+                timestamp: Some(0),
+                recv_window: None,
+            }),
+            || 1_770_000_000_000,
+        )
+        .expect("timestamp-only receive-window options should normalize");
+        assert_eq!(timestamp_only.timestamp, Some(0));
+        assert_eq!(timestamp_only.recv_window, None);
+
+        let stamped = normalize_receive_window_options(
+            Some(ReceiveWindowOptions {
+                timestamp: None,
+                recv_window: Some(1500),
+            }),
+            || 1_770_000_000_000,
+        )
+        .expect("recv_window-only receive-window options should normalize");
+        assert_eq!(stamped.timestamp, Some(1_770_000_000_000));
+        assert_eq!(stamped.recv_window, Some(1500));
+    }
+
+    #[test]
+    fn receive_window_normalization_rejects_invalid_values() {
+        for options in [
+            ReceiveWindowOptions {
+                timestamp: Some(-1),
+                recv_window: None,
+            },
+            ReceiveWindowOptions {
+                timestamp: None,
+                recv_window: Some(0),
+            },
+            ReceiveWindowOptions {
+                timestamp: None,
+                recv_window: Some(10_001),
+            },
+        ] {
+            let error = normalize_receive_window_options(Some(options), || 1_770_000_000_000)
+                .expect_err("invalid receive-window options should fail");
+            assert!(matches!(error, LimitlessError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn new_order_payload_serializes_receive_window_top_level_only() {
+        let payload = NewOrderPayload {
+            order: test_signed_order(),
+            order_type: OrderType::Gtc,
+            market_slug: "test-market".to_string(),
+            owner_id: 42,
+            post_only: None,
+            timestamp: Some(1_770_000_000_000),
+            recv_window: Some(1500),
+        };
+
+        let value = serde_json::to_value(&payload).expect("payload should serialize");
+        assert_eq!(value["timestamp"], json!(1_770_000_000_000_i64));
+        assert_eq!(value["recvWindow"], json!(1500));
+        assert!(value["order"].get("timestamp").is_none());
+        assert!(value["order"].get("recvWindow").is_none());
+    }
+
+    #[test]
+    fn new_order_payload_omits_receive_window_by_default() {
+        let payload = NewOrderPayload {
+            order: test_signed_order(),
+            order_type: OrderType::Gtc,
+            market_slug: "test-market".to_string(),
+            owner_id: 42,
+            post_only: None,
+            timestamp: None,
+            recv_window: None,
+        };
+
+        let value = serde_json::to_value(&payload).expect("payload should serialize");
+        assert!(value.get("timestamp").is_none());
+        assert!(value.get("recvWindow").is_none());
+        assert!(value["order"].get("timestamp").is_none());
+        assert!(value["order"].get("recvWindow").is_none());
+    }
+
+    #[test]
+    fn create_order_with_receive_window_rejects_invalid_values_before_network() {
+        let client = HttpClient::builder()
+            .api_key("test-api-key")
+            .build()
+            .expect("client");
+        let order_client =
+            OrderClient::new(client, TEST_PRIVATE_KEY_HEX, None).expect("order client");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let error = runtime
+            .block_on(order_client.create_order_with_receive_window(
+                test_create_order_params(),
+                ReceiveWindowOptions {
+                    timestamp: None,
+                    recv_window: Some(0),
+                },
+            ))
+            .expect_err("invalid receive-window options should fail");
+
+        assert!(matches!(error, LimitlessError::InvalidInput(_)));
+        assert!(error.to_string().contains("recv_window"));
     }
 
     #[test]
