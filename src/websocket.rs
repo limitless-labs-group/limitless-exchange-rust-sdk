@@ -75,12 +75,6 @@ pub enum WebSocketState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SubscriptionChannel {
-    Orderbook,
-    Trades,
-    Orders,
-    Fills,
-    Markets,
-    Prices,
     SubscribeMarketPrices,
     SubscribePositions,
     SubscribeTransactions,
@@ -94,12 +88,6 @@ pub enum SubscriptionChannel {
 impl SubscriptionChannel {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Orderbook => "orderbook",
-            Self::Trades => "trades",
-            Self::Orders => "orders",
-            Self::Fills => "fills",
-            Self::Markets => "markets",
-            Self::Prices => "prices",
             Self::SubscribeMarketPrices => "subscribe_market_prices",
             Self::SubscribePositions => "subscribe_positions",
             Self::SubscribeTransactions => "subscribe_transactions",
@@ -218,60 +206,9 @@ pub struct OrderbookUpdate {
     pub timestamp: Value,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TradeEvent {
-    #[serde(rename = "marketSlug")]
-    pub market_slug: String,
-    pub side: String,
-    pub price: f64,
-    pub size: f64,
-    pub timestamp: f64,
-    #[serde(rename = "tradeId")]
-    pub trade_id: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OrderUpdate {
-    #[serde(rename = "orderId")]
-    pub order_id: String,
-    #[serde(rename = "marketSlug")]
-    pub market_slug: String,
-    pub side: String,
-    #[serde(default)]
-    pub price: Option<f64>,
-    pub size: f64,
-    pub filled: f64,
-    pub status: String,
-    pub timestamp: f64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FillEvent {
-    #[serde(rename = "orderId")]
-    pub order_id: String,
-    #[serde(rename = "marketSlug")]
-    pub market_slug: String,
-    pub side: String,
-    pub price: f64,
-    pub size: f64,
-    pub timestamp: f64,
-    #[serde(rename = "fillId")]
-    pub fill_id: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MarketUpdateEvent {
-    #[serde(rename = "marketSlug")]
-    pub market_slug: String,
-    #[serde(rename = "lastPrice", default)]
-    pub last_price: Option<f64>,
-    #[serde(rename = "volume24h", default)]
-    pub volume_24h: Option<f64>,
-    #[serde(rename = "priceChange24h", default)]
-    pub price_change_24h: Option<f64>,
-    pub timestamp: f64,
-}
-
+/// Single AMM price entry in `newPriceData.updatedPrices`.
+///
+/// CLOB `orderbookUpdate` events use `OrderbookData` instead.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AmmPriceEntry {
     #[serde(rename = "marketId")]
@@ -759,20 +696,6 @@ impl WebSocketClient {
         self.on_typed("oraclePriceData", "oracle price data", handler)
     }
 
-    pub fn on_trade<F>(&self, handler: F) -> u64
-    where
-        F: Fn(TradeEvent) + Send + Sync + 'static,
-    {
-        self.on_typed("trade", "trade event", handler)
-    }
-
-    pub fn on_order<F>(&self, handler: F) -> u64
-    where
-        F: Fn(OrderUpdate) + Send + Sync + 'static,
-    {
-        self.on_typed("order", "order event", handler)
-    }
-
     pub fn on_order_event<F>(&self, handler: F) -> u64
     where
         F: Fn(Value) + Send + Sync + 'static,
@@ -780,25 +703,11 @@ impl WebSocketClient {
         self.on("orderEvent", handler)
     }
 
-    pub fn on_fill<F>(&self, handler: F) -> u64
-    where
-        F: Fn(FillEvent) + Send + Sync + 'static,
-    {
-        self.on_typed("fill", "fill event", handler)
-    }
-
     pub fn on_transaction<F>(&self, handler: F) -> u64
     where
         F: Fn(TransactionEvent) + Send + Sync + 'static,
     {
         self.on_typed("tx", "transaction event", handler)
-    }
-
-    pub fn on_market<F>(&self, handler: F) -> u64
-    where
-        F: Fn(MarketUpdateEvent) + Send + Sync + 'static,
-    {
-        self.on_typed("market", "market event", handler)
     }
 
     pub fn on_market_created<F>(&self, handler: F) -> u64
@@ -1568,12 +1477,6 @@ fn subscription_key(channel: SubscriptionChannel, options: &SubscriptionOptions)
 
 fn channel_from_key(key: &str) -> Option<SubscriptionChannel> {
     match key.split('|').next().unwrap_or_default() {
-        "orderbook" => Some(SubscriptionChannel::Orderbook),
-        "trades" => Some(SubscriptionChannel::Trades),
-        "orders" => Some(SubscriptionChannel::Orders),
-        "fills" => Some(SubscriptionChannel::Fills),
-        "markets" => Some(SubscriptionChannel::Markets),
-        "prices" => Some(SubscriptionChannel::Prices),
         "subscribe_market_prices" => Some(SubscriptionChannel::SubscribeMarketPrices),
         "subscribe_positions" => Some(SubscriptionChannel::SubscribePositions),
         "subscribe_transactions" => Some(SubscriptionChannel::SubscribeTransactions),
@@ -1589,9 +1492,7 @@ fn channel_from_key(key: &str) -> Option<SubscriptionChannel> {
 fn requires_websocket_auth(channel: SubscriptionChannel) -> bool {
     matches!(
         channel,
-        SubscriptionChannel::Orders
-            | SubscriptionChannel::Fills
-            | SubscriptionChannel::SubscribePositions
+        SubscriptionChannel::SubscribePositions
             | SubscriptionChannel::SubscribeTransactions
             | SubscriptionChannel::SubscribeOrderEvents
     )

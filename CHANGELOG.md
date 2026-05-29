@@ -2,6 +2,23 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [1.0.11]
+
+### Added
+
+- Added `PortfolioFetcher::get_current_profile` for `GET /profiles/me`, fetching the authenticated caller's private profile without passing an address.
+- Added `PartnerAccountService::list_accounts` for `GET /profiles/partner-accounts`, including typed list params/response models, optional address recovery, and `limit` capped at 25.
+- Added public partner account list models:
+  - `ListPartnerAccountsParams`
+  - `PartnerAccountListItem`
+  - `ListPartnerAccountsResponse`
+- Added unit coverage for `/profiles/me` profile reads and HMAC-only partner account listing, filtering, pagination capping, and invalid query params.
+
+### Changed
+
+- Removed unsupported legacy websocket short channel variants and stale typed handlers/types for unsupported events.
+- README, examples README, Cargo manifest, and lockfile now target `v1.0.11`.
+
 ## [1.0.10]
 
 ### Added

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use url::form_urlencoded::Serializer;
 
 use crate::{
     errors::{LimitlessError, Result},
@@ -9,8 +10,11 @@ use crate::{
 };
 
 const PARTNER_ACCOUNT_DISPLAY_NAME_MAX_LENGTH: usize = 44;
+const PARTNER_ACCOUNTS_MAX_LIMIT: u32 = 25;
 const PARTNER_ACCOUNT_ALLOWANCE_HMAC_ONLY_ERROR: &str =
     "Partner account allowance recovery requires HMAC-scoped API token auth; legacy API keys are not supported.";
+const PARTNER_ACCOUNT_LIST_HMAC_ONLY_ERROR: &str =
+    "Partner account listing requires HMAC-scoped API token auth; legacy API keys are not supported.";
 
 #[derive(Clone)]
 pub struct PartnerAccountService {
@@ -56,6 +60,20 @@ impl PartnerAccountService {
         self.client
             .post_with_headers("/profiles/partner-accounts", input, headers)
             .await
+    }
+
+    /// Lists partner-owned accounts, or recovers a specific account by address when
+    /// `params.account` is provided.
+    pub async fn list_accounts(
+        &self,
+        params: &ListPartnerAccountsParams,
+    ) -> Result<ListPartnerAccountsResponse> {
+        self.require_hmac_auth(
+            "list_partner_accounts",
+            PARTNER_ACCOUNT_LIST_HMAC_ONLY_ERROR,
+        )?;
+        let path = partner_accounts_path(params)?;
+        self.client.get(&path).await
     }
 
     /// Checks delegated-trading allowance readiness from live chain state for a partner-created
@@ -137,11 +155,13 @@ impl PartnerAccountService {
     }
 
     fn require_allowance_hmac_auth(&self, operation: &str) -> Result<()> {
+        self.require_hmac_auth(operation, PARTNER_ACCOUNT_ALLOWANCE_HMAC_ONLY_ERROR)
+    }
+
+    fn require_hmac_auth(&self, operation: &str, error_message: &str) -> Result<()> {
         self.client.require_auth(operation)?;
         if self.client.hmac_credentials().is_none() {
-            return Err(LimitlessError::invalid_input(
-                PARTNER_ACCOUNT_ALLOWANCE_HMAC_ONLY_ERROR,
-            ));
+            return Err(LimitlessError::invalid_input(error_message));
         }
         Ok(())
     }
@@ -167,6 +187,34 @@ pub struct PartnerAccountResponse {
     #[serde(rename = "profileId")]
     pub profile_id: i32,
     pub account: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ListPartnerAccountsParams {
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PartnerAccountListItem {
+    #[serde(rename = "profileId")]
+    pub profile_id: i32,
+    pub account: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ListPartnerAccountsResponse {
+    pub data: Vec<PartnerAccountListItem>,
+    pub page: u32,
+    pub limit: u32,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -257,6 +305,45 @@ pub struct PartnerAccountAllowanceResponse {
     pub targets: Vec<PartnerAccountAllowanceTarget>,
 }
 
+fn partner_accounts_path(params: &ListPartnerAccountsParams) -> Result<String> {
+    let mut query = Serializer::new(String::new());
+
+    if let Some(account) = &params.account {
+        let account = account.trim();
+        if account.is_empty() {
+            return Err(LimitlessError::invalid_input(
+                "account must be a non-empty string",
+            ));
+        }
+        query.append_pair("account", account);
+    }
+
+    if let Some(limit) = params.limit {
+        if limit == 0 {
+            return Err(LimitlessError::invalid_input(
+                "limit must be a positive integer",
+            ));
+        }
+        query.append_pair("limit", &limit.min(PARTNER_ACCOUNTS_MAX_LIMIT).to_string());
+    }
+
+    if let Some(page) = params.page {
+        if page == 0 {
+            return Err(LimitlessError::invalid_input(
+                "page must be a positive integer",
+            ));
+        }
+        query.append_pair("page", &page.to_string());
+    }
+
+    let encoded = query.finish();
+    if encoded.is_empty() {
+        Ok("/profiles/partner-accounts".to_string())
+    } else {
+        Ok(format!("/profiles/partner-accounts?{encoded}"))
+    }
+}
+
 fn partner_account_allowances_path(profile_id: i32) -> Result<String> {
     if profile_id <= 0 {
         return Err(LimitlessError::invalid_input(
@@ -279,9 +366,10 @@ mod tests {
     };
 
     use super::{
-        partner_account_allowances_path, PartnerAccountAllowanceResponse, PartnerAccountService,
+        partner_account_allowances_path, partner_accounts_path, ListPartnerAccountsParams,
+        ListPartnerAccountsResponse, PartnerAccountAllowanceResponse, PartnerAccountService,
         PartnerWithdrawalAddressInput, PartnerWithdrawalAddressResponse,
-        PARTNER_ACCOUNT_ALLOWANCE_HMAC_ONLY_ERROR,
+        PARTNER_ACCOUNT_ALLOWANCE_HMAC_ONLY_ERROR, PARTNER_ACCOUNT_LIST_HMAC_ONLY_ERROR,
     };
 
     #[test]
@@ -291,6 +379,69 @@ mod tests {
             "/profiles/partner-accounts/12345/allowances"
         );
         assert!(partner_account_allowances_path(0).is_err());
+    }
+
+    #[test]
+    fn builds_partner_accounts_path() {
+        assert_eq!(
+            partner_accounts_path(&ListPartnerAccountsParams::default()).unwrap(),
+            "/profiles/partner-accounts"
+        );
+
+        assert_eq!(
+            partner_accounts_path(&ListPartnerAccountsParams {
+                account: Some(" 0x1676716Ef7F19B5C5d690631CB57cf0bFD900A3d ".to_string()),
+                limit: Some(100),
+                page: Some(2),
+            })
+            .unwrap(),
+            "/profiles/partner-accounts?account=0x1676716Ef7F19B5C5d690631CB57cf0bFD900A3d&limit=25&page=2"
+        );
+    }
+
+    #[test]
+    fn partner_accounts_path_rejects_invalid_params() {
+        assert_eq!(
+            partner_accounts_path(&ListPartnerAccountsParams {
+                account: Some(" ".to_string()),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .to_string(),
+            "account must be a non-empty string"
+        );
+
+        assert_eq!(
+            partner_accounts_path(&ListPartnerAccountsParams {
+                limit: Some(0),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .to_string(),
+            "limit must be a positive integer"
+        );
+
+        assert_eq!(
+            partner_accounts_path(&ListPartnerAccountsParams {
+                page: Some(0),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .to_string(),
+            "page must be a positive integer"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_accounts_rejects_legacy_api_key_only_auth() {
+        let client = HttpClient::builder().api_key("api-key").build().unwrap();
+        let service = PartnerAccountService::new(client);
+
+        let err = service
+            .list_accounts(&ListPartnerAccountsParams::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), PARTNER_ACCOUNT_LIST_HMAC_ONLY_ERROR);
     }
 
     #[tokio::test]
@@ -363,6 +514,28 @@ mod tests {
             response.targets[0].transaction_id.as_deref(),
             Some("privy-transaction-id")
         );
+    }
+
+    #[test]
+    fn deserializes_partner_account_list_response() {
+        let payload = serde_json::json!({
+            "data": [{
+                "profileId": 42,
+                "account": "0x1676716Ef7F19B5C5d690631CB57cf0bFD900A3d",
+                "displayName": "Partner User"
+            }],
+            "page": 1,
+            "limit": 25,
+            "hasMore": false
+        });
+
+        let response: ListPartnerAccountsResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(response.page, 1);
+        assert_eq!(response.limit, 25);
+        assert!(!response.has_more);
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].profile_id, 42);
+        assert_eq!(response.data[0].display_name, "Partner User");
     }
 
     #[test]

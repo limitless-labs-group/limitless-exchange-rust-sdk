@@ -36,7 +36,7 @@ Common environment variables:
 - `MARKET_SLUG` to override the default market slug used by trade and websocket examples
 - `MARKET_PAGE_PATH` to override the default market-page path used by the market-pages example
 - `MARKET_PAGE_TICKER_FILTER` and `MARKET_PAGE_DURATION_FILTER` for optional market-page filtering
-- `PROFILE_ADDRESS` for the portfolio example
+- `PROFILE_ADDRESS` optionally fetches an additional address-specific profile in the portfolio example
 - `LIMITLESS_BASE_URL` and `LIMITLESS_STRATEGY_HEADER` for the custom-client example
 
 Partner / delegated examples:
@@ -85,4 +85,4 @@ Notes:
 - `websocket_positions` accepts either `LIMITLESS_API_KEY` or scoped HMAC credentials.
 - `server_wallet_redeem_withdraw` is only for child profiles created with `create_server_wallet = true`; if `LIMITLESS_WITHDRAW_DESTINATION` is omitted, withdraw defaults to the authenticated partner smart wallet when present, otherwise the authenticated partner account.
 - Set `LIMITLESS_ALLOWLIST_WITHDRAW_DESTINATION=1` with `LIMITLESS_WITHDRAW_DESTINATION` to add or reuse the destination with Privy identity auth before the HMAC withdraw request.
-- `cargo check --examples` passes in this repository as of the current `1.0.10` release prep.
+- `cargo check --examples` passes in this repository as of the current `1.0.11` release prep.

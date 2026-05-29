@@ -3,13 +3,18 @@ mod support;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = support::api_key_client()?;
-    let profile_address = support::require_env("PROFILE_ADDRESS");
 
-    let profile = sdk.portfolio.get_profile(&profile_address).await?;
-    println!("User ID: {}", profile.id);
-    println!("Account: {}", profile.account);
-    if let Some(rank) = profile.rank {
+    let current_profile = sdk.portfolio.get_current_profile().await?;
+    println!("Current user ID: {}", current_profile.id);
+    println!("Current account: {}", current_profile.account);
+    if let Some(rank) = current_profile.rank {
         println!("Rank: {} (Fee: {} bps)", rank.name, rank.fee_rate_bps);
+    }
+
+    if let Some(profile_address) = support::optional_env("PROFILE_ADDRESS") {
+        let profile = sdk.portfolio.get_profile(&profile_address).await?;
+        println!("\nProfile by address ID: {}", profile.id);
+        println!("Profile by address account: {}", profile.account);
     }
 
     let clob_positions = sdk.portfolio.get_clob_positions().await?;
