@@ -212,6 +212,7 @@ let order = order_client
 - User-order retrieval and market cancel-all: [examples/user_orders.rs](examples/user_orders.rs)
 - Signed CLOB orders:
   - GTC: [examples/clob_gtc_order.rs](examples/clob_gtc_order.rs)
+  - STP (self-trade prevention): [examples/clob_stp_order.rs](examples/clob_stp_order.rs)
   - FAK: [examples/clob_fak_order.rs](examples/clob_fak_order.rs)
   - FOK: [examples/clob_fok_order.rs](examples/clob_fok_order.rs)
 - NegRisk order flow: [examples/negrisk_order.rs](examples/negrisk_order.rs)

@@ -2,6 +2,19 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Self-trade prevention (STP) support:
+  - `StpPolicy` enum (`CancelBoth` / `CancelMaker` / `CancelTaker`), serialized as the snake_case wire values `cancel_both` / `cancel_maker` / `cancel_taker`.
+  - Optional `stp_policy` field on `CreateOrderParams` and `CreateDelegatedOrderParams`, sent as the top-level `stpPolicy` request field. It is never part of the signed EIP-712 order. Omitting it lets the matching engine apply its default (`cancel_maker`).
+- Surfaced the order execution response, previously dropped on deserialization:
+  - `OrderResponse::execution` (`OrderExecution`), reporting `matched`, `settlement_status` (plain string), fees (`fee_rate_bps` / `effective_fee_bps` as numbers), decimal-string `totals_raw` (`OrderExecutionTotalsRaw`), and the STP signals `reason` and `stp_maker_cancels`. The field is defaulted on deserialization so responses without `execution` do not fail.
+- Documented the websocket `orderEvent` STP signal: a `CANCELLATION` frame may carry `reason: STP_MAKER_CANCELLED`; a self-trade-prevented taker reject is HTTP-only.
+- `clob_stp_order` example showing an STP policy on order creation and reading the execution response.
+- Unit coverage for top-level-only `stpPolicy` serialization, omitted-default behavior, snake_case wire values, execution deserialization with STP signals, and tolerance of responses without `execution`.
+
 ## [1.0.13]
 
 ### Added

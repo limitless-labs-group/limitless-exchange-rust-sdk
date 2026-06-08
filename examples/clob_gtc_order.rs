@@ -30,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 taker: None,
                 post_only: true,
             }),
+            stp_policy: None,
         })
         .await?;
 

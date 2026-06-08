@@ -16,6 +16,7 @@ Available examples:
 - `api_tokens`
 - `api_token_revoke`
 - `clob_gtc_order`
+- `clob_stp_order`
 - `clob_fak_order`
 - `clob_fok_order`
 - `negrisk_order`
