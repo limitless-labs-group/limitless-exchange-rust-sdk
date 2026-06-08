@@ -2,6 +2,22 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [1.1.0]
+
+### Added
+
+- Typed `orderEvent` payloads via `WebSocketClient::on_order_event_typed`, deserializing the socket.io `orderEvent` frame into an `OrderEvent` enum tagged on `type`:
+  - `OrderEvent::Matched(MatchedOrderEvent)` — pre-settlement per-fill estimate (`source: "SETTLEMENT"`, `type: "MATCHED"`); monetary fields are JSON strings, `configuredFeeRateBps`/`effectiveFeeBps` are JSON numbers (maker side reports `0`), with `token` (`YES`/`NO`) and `isEstimate`.
+  - `OrderEvent::Execution(ExecutionOrderEvent)` — FAK/FOK terminal outcome (`source: "OME"`, `type: "EXECUTION"`); `status` is `FILLED`/`PARTIALLY_FILLED`/`KILLED`, `eventId` is the string `"terminal:<orderId>"`.
+  - `OrderEvent::Unknown` absorbs lifecycle frames (`PLACEMENT`/`UPDATE`/`CANCELLATION`/`MINED`/`FAILED`).
+- The raw `WebSocketClient::on_order_event` handler is retained unchanged for callers that want the untyped `serde_json::Value`.
+- Added the runnable `websocket_order_events` example covering the typed `orderEvent` subscription flow.
+
+### Changed
+
+- `ExecutionOrderEvent::price` and `ExecutionOrderEvent::remaining_size` use `FlexFloat` to accept the JSON numbers OME emits (the static type previously documented for these fields was `string`, which never matched the wire value — the runtime value was always a JSON number). This is a no-op at runtime; only the static type is corrected.
+- README, examples README, Cargo manifest, and lockfile now target `v1.1.0`.
+
 ## [1.0.13]
 
 ### Added
