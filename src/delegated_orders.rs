@@ -90,6 +90,8 @@ impl DelegatedOrderService {
             owner_id: params.on_behalf_of,
             on_behalf_of: Some(params.on_behalf_of),
             post_only: post_only_from_args(&params.args),
+            // stp_policy is sent top-level; do NOT add it to the signed order
+            // (would change the EIP-712 signature).
             stp_policy: params.stp_policy,
             timestamp: receive_window.timestamp,
             recv_window: receive_window.recv_window,
@@ -166,9 +168,8 @@ pub struct CreateDelegatedOrderParams {
     pub on_behalf_of: i32,
     pub fee_rate_bps: i32,
     pub args: OrderArgs,
-    /// Optional self-trade prevention policy. Sent as the top-level `stpPolicy`
-    /// request field, never part of the order body. Omit to use the engine
-    /// default (`cancel_maker`).
+    /// Optional self-trade-prevention policy. Omit to use the server default
+    /// (`cancel_maker`).
     pub stp_policy: Option<StpPolicy>,
 }
 

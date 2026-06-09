@@ -65,12 +65,13 @@ pub enum OrderType {
     Gtc,
 }
 
-/// Self-trade prevention policy applied when a taker order would match its own
-/// resting maker orders.
+/// Self-trade-prevention policy: what happens when an order would match the
+/// same account's own resting orders.
 ///
-/// Sent as the top-level `stpPolicy` field on the create-order request body. It
-/// is not part of the signed EIP-712 order. Omit it to let the matching engine
-/// apply its default (`cancel_maker`).
+/// - `cancel_maker` (default): cancel the resting order, let the incoming order
+///   continue.
+/// - `cancel_taker`: reject the incoming order.
+/// - `cancel_both`: do both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StpPolicy {
     #[serde(rename = "cancel_both")]
@@ -388,9 +389,8 @@ pub struct CreateOrderParams {
     pub order_type: OrderType,
     pub market_slug: String,
     pub args: OrderArgs,
-    /// Optional self-trade prevention policy. Sent as the top-level `stpPolicy`
-    /// request field, never part of the signed order. Omit to use the engine
-    /// default (`cancel_maker`).
+    /// Optional self-trade-prevention policy. Omit to use the server default
+    /// (`cancel_maker`).
     pub stp_policy: Option<StpPolicy>,
 }
 
@@ -816,6 +816,8 @@ impl OrderClient {
             market_slug: params.market_slug,
             owner_id: user_data.user_id,
             post_only: post_only_from_args(&params.args),
+            // stp_policy is sent top-level; do NOT add it to the signed order
+            // (would change the EIP-712 signature).
             stp_policy: params.stp_policy,
             timestamp: receive_window.timestamp,
             recv_window: receive_window.recv_window,
