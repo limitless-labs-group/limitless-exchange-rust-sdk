@@ -65,6 +65,23 @@ pub enum OrderType {
     Gtc,
 }
 
+/// Self-trade-prevention policy: what happens when an order would match the
+/// same account's own resting orders.
+///
+/// - `cancel_maker` (default): cancel the resting order, let the incoming order
+///   continue.
+/// - `cancel_taker`: reject the incoming order.
+/// - `cancel_both`: do both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StpPolicy {
+    #[serde(rename = "cancel_both")]
+    CancelBoth,
+    #[serde(rename = "cancel_maker")]
+    CancelMaker,
+    #[serde(rename = "cancel_taker")]
+    CancelTaker,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum SignatureType {
@@ -215,6 +232,8 @@ pub struct NewOrderPayload {
     pub owner_id: i32,
     #[serde(rename = "postOnly", skip_serializing_if = "Option::is_none")]
     pub post_only: Option<bool>,
+    #[serde(rename = "stpPolicy", skip_serializing_if = "Option::is_none")]
+    pub stp_policy: Option<StpPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
     #[serde(rename = "recvWindow", skip_serializing_if = "Option::is_none")]
@@ -274,11 +293,89 @@ pub struct OrderMatch {
     pub order_id: String,
 }
 
+/// Raw decimal totals for a settled or pending execution.
+///
+/// All six fields are decimal strings as returned by the API. They are not
+/// coerced to numbers to preserve full precision.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OrderExecutionTotalsRaw {
+    #[serde(rename = "contractsGross", default)]
+    pub contracts_gross: String,
+    #[serde(rename = "contractsFee", default)]
+    pub contracts_fee: String,
+    #[serde(rename = "contractsNet", default)]
+    pub contracts_net: String,
+    #[serde(rename = "usdGross", default)]
+    pub usd_gross: String,
+    #[serde(rename = "usdFee", default)]
+    pub usd_fee: String,
+    #[serde(rename = "usdNet", default)]
+    pub usd_net: String,
+}
+
+/// Execution outcome for a submitted order.
+///
+/// Always present on a successful `POST /orders` response. `settlement_status`
+/// is a plain string (e.g. `DELAYED`, `MATCHED`, `CANCELED`, `MINED`,
+/// `CONFIRMED`, `RETRYING`, `FAILED`, `UNMATCHED`) and is intentionally not
+/// modeled as an enum so new server values do not break deserialization.
+///
+/// `reason` carries the self-trade prevention signal for a rejected taker
+/// (e.g. `STP_TAKER_REJECTED`); it is HTTP-only. `stp_maker_cancels` lists the
+/// canceled maker order ids when self-trade prevention canceled resting makers.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OrderExecution {
+    pub matched: bool,
+    #[serde(rename = "settlementStatus", default)]
+    pub settlement_status: String,
+    #[serde(
+        rename = "tradeEventId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub trade_event_id: Option<String>,
+    #[serde(rename = "txHash", default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+    #[serde(
+        rename = "clientOrderId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_order_id: Option<String>,
+    #[serde(
+        rename = "eligibleAt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub eligible_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(
+        rename = "stpMakerCancels",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stp_maker_cancels: Option<Vec<String>>,
+    #[serde(rename = "feeRateBps", default)]
+    pub fee_rate_bps: f64,
+    #[serde(rename = "effectiveFeeBps", default)]
+    pub effective_fee_bps: f64,
+    #[serde(rename = "totalsRaw", default)]
+    pub totals_raw: OrderExecutionTotalsRaw,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrderResponse {
     pub order: CreatedOrder,
     #[serde(rename = "makerMatches", default)]
     pub maker_matches: Vec<OrderMatch>,
+    /// Execution outcome of the submitted order.
+    ///
+    /// Always present on a live `POST /orders` response. Defaulted on
+    /// deserialization to tolerate older API responses or hand-built fixtures
+    /// that omit it.
+    #[serde(default)]
+    pub execution: OrderExecution,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -292,6 +389,9 @@ pub struct CreateOrderParams {
     pub order_type: OrderType,
     pub market_slug: String,
     pub args: OrderArgs,
+    /// Optional self-trade-prevention policy. Omit to use the server default
+    /// (`cancel_maker`).
+    pub stp_policy: Option<StpPolicy>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -716,6 +816,9 @@ impl OrderClient {
             market_slug: params.market_slug,
             owner_id: user_data.user_id,
             post_only: post_only_from_args(&params.args),
+            // stp_policy is sent top-level; do NOT add it to the signed order
+            // (would change the EIP-712 signature).
+            stp_policy: params.stp_policy,
             timestamp: receive_window.timestamp,
             recv_window: receive_window.recv_window,
         };
@@ -1618,6 +1721,7 @@ mod tests {
                 taker: None,
                 post_only: false,
             }),
+            stp_policy: None,
         }
     }
 
@@ -1682,6 +1786,7 @@ mod tests {
             market_slug: "test-market".to_string(),
             owner_id: 42,
             post_only: None,
+            stp_policy: None,
             timestamp: Some(1_770_000_000_000),
             recv_window: Some(1500),
         };
@@ -1701,6 +1806,7 @@ mod tests {
             market_slug: "test-market".to_string(),
             owner_id: 42,
             post_only: None,
+            stp_policy: None,
             timestamp: None,
             recv_window: None,
         };
@@ -1710,6 +1816,148 @@ mod tests {
         assert!(value.get("recvWindow").is_none());
         assert!(value["order"].get("timestamp").is_none());
         assert!(value["order"].get("recvWindow").is_none());
+    }
+
+    #[test]
+    fn new_order_payload_serializes_stp_policy_top_level_only() {
+        let payload = NewOrderPayload {
+            order: test_signed_order(),
+            order_type: OrderType::Gtc,
+            market_slug: "test-market".to_string(),
+            owner_id: 42,
+            post_only: None,
+            stp_policy: Some(StpPolicy::CancelBoth),
+            timestamp: None,
+            recv_window: None,
+        };
+
+        let value = serde_json::to_value(&payload).expect("payload should serialize");
+        assert_eq!(value["stpPolicy"], json!("cancel_both"));
+        assert!(value["order"].get("stpPolicy").is_none());
+        // Signed order stays exactly 12 fields plus the signature.
+        let order = value["order"].as_object().expect("order object");
+        assert_eq!(order.len(), 14);
+    }
+
+    #[test]
+    fn new_order_payload_omits_stp_policy_by_default() {
+        let payload = NewOrderPayload {
+            order: test_signed_order(),
+            order_type: OrderType::Gtc,
+            market_slug: "test-market".to_string(),
+            owner_id: 42,
+            post_only: None,
+            stp_policy: None,
+            timestamp: None,
+            recv_window: None,
+        };
+
+        let value = serde_json::to_value(&payload).expect("payload should serialize");
+        assert!(value.get("stpPolicy").is_none());
+    }
+
+    #[test]
+    fn stp_policy_values_are_snake_case() {
+        assert_eq!(
+            serde_json::to_value(StpPolicy::CancelMaker).unwrap(),
+            json!("cancel_maker")
+        );
+        assert_eq!(
+            serde_json::to_value(StpPolicy::CancelTaker).unwrap(),
+            json!("cancel_taker")
+        );
+        assert_eq!(
+            serde_json::from_value::<StpPolicy>(json!("cancel_both")).unwrap(),
+            StpPolicy::CancelBoth
+        );
+    }
+
+    #[test]
+    fn order_response_deserializes_execution_with_stp_signals() {
+        let response: OrderResponse = serde_json::from_value(json!({
+            "order": {
+                "id": "order-1",
+                "createdAt": "2026-06-08T00:00:00.000Z",
+                "makerAmount": 470154,
+                "takerAmount": 1234000,
+                "signatureType": 0,
+                "salt": 1742191300000000_i64,
+                "maker": TEST_SIGNER_ADDRESS,
+                "signer": TEST_SIGNER_ADDRESS,
+                "taker": ZERO_ADDRESS,
+                "tokenId": "12345",
+                "side": 0,
+                "feeRateBps": 300,
+                "nonce": 0,
+                "signature": EXPECTED_ORDER_SIGNATURE,
+                "orderType": "GTC",
+                "price": 0.381,
+                "marketId": 7
+            },
+            "makerMatches": [],
+            "execution": {
+                "matched": false,
+                "settlementStatus": "CANCELED",
+                "reason": "STP_TAKER_REJECTED",
+                "stpMakerCancels": ["maker-a", "maker-b"],
+                "feeRateBps": 300,
+                "effectiveFeeBps": 0,
+                "totalsRaw": {
+                    "contractsGross": "0",
+                    "contractsFee": "0",
+                    "contractsNet": "0",
+                    "usdGross": "0",
+                    "usdFee": "0",
+                    "usdNet": "0"
+                }
+            }
+        }))
+        .expect("order response should deserialize");
+
+        assert!(!response.execution.matched);
+        assert_eq!(response.execution.settlement_status, "CANCELED");
+        assert_eq!(
+            response.execution.reason.as_deref(),
+            Some("STP_TAKER_REJECTED")
+        );
+        assert_eq!(
+            response.execution.stp_maker_cancels,
+            Some(vec!["maker-a".to_string(), "maker-b".to_string()])
+        );
+        assert_eq!(response.execution.fee_rate_bps, 300.0);
+        assert_eq!(response.execution.effective_fee_bps, 0.0);
+        assert_eq!(response.execution.totals_raw.usd_net, "0");
+    }
+
+    #[test]
+    fn order_response_tolerates_missing_execution() {
+        let response: OrderResponse = serde_json::from_value(json!({
+            "order": {
+                "id": "order-1",
+                "createdAt": "2026-06-08T00:00:00.000Z",
+                "makerAmount": 470154,
+                "takerAmount": 1234000,
+                "signatureType": 0,
+                "salt": 1742191300000000_i64,
+                "maker": TEST_SIGNER_ADDRESS,
+                "signer": TEST_SIGNER_ADDRESS,
+                "taker": ZERO_ADDRESS,
+                "tokenId": "12345",
+                "side": 0,
+                "feeRateBps": 300,
+                "nonce": 0,
+                "signature": EXPECTED_ORDER_SIGNATURE,
+                "orderType": "GTC",
+                "price": 0.381,
+                "marketId": 7
+            }
+        }))
+        .expect("order response without execution should deserialize");
+
+        assert!(!response.execution.matched);
+        assert_eq!(response.execution.settlement_status, "");
+        assert!(response.execution.reason.is_none());
+        assert!(response.execution.stp_maker_cancels.is_none());
     }
 
     #[test]

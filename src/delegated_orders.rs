@@ -5,6 +5,7 @@ use crate::{
     orders::{
         normalize_receive_window_options, post_only_from_args, CancelResponse, OrderArgs,
         OrderBuilder, OrderResponse, OrderType, ReceiveWindowOptions, Side, SignatureType,
+        StpPolicy,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,9 @@ impl DelegatedOrderService {
             owner_id: params.on_behalf_of,
             on_behalf_of: Some(params.on_behalf_of),
             post_only: post_only_from_args(&params.args),
+            // stp_policy is sent top-level; do NOT add it to the signed order
+            // (would change the EIP-712 signature).
+            stp_policy: params.stp_policy,
             timestamp: receive_window.timestamp,
             recv_window: receive_window.recv_window,
         };
@@ -164,6 +168,9 @@ pub struct CreateDelegatedOrderParams {
     pub on_behalf_of: i32,
     pub fee_rate_bps: i32,
     pub args: OrderArgs,
+    /// Optional self-trade-prevention policy. Omit to use the server default
+    /// (`cancel_maker`).
+    pub stp_policy: Option<StpPolicy>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -204,6 +211,8 @@ pub struct CreateOrderRequest {
     pub on_behalf_of: Option<i32>,
     #[serde(rename = "postOnly", skip_serializing_if = "Option::is_none")]
     pub post_only: Option<bool>,
+    #[serde(rename = "stpPolicy", skip_serializing_if = "Option::is_none")]
+    pub stp_policy: Option<StpPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
     #[serde(rename = "recvWindow", skip_serializing_if = "Option::is_none")]
@@ -232,6 +241,7 @@ mod tests {
                 post_only: false,
             }
             .into(),
+            stp_policy: None,
         }
     }
 
@@ -289,6 +299,7 @@ mod tests {
                         taker: None,
                     }
                     .into(),
+                    stp_policy: None,
                 }),
             )
             .expect_err("on behalf of validation should fail");
@@ -305,6 +316,7 @@ mod tests {
             owner_id: 326,
             on_behalf_of: Some(326),
             post_only: None,
+            stp_policy: None,
             timestamp: Some(1_770_000_000_000),
             recv_window: Some(1500),
         };
@@ -325,6 +337,7 @@ mod tests {
             owner_id: 326,
             on_behalf_of: Some(326),
             post_only: None,
+            stp_policy: None,
             timestamp: None,
             recv_window: None,
         };
@@ -334,6 +347,43 @@ mod tests {
         assert!(value.get("recvWindow").is_none());
         assert!(value["order"].get("timestamp").is_none());
         assert!(value["order"].get("recvWindow").is_none());
+    }
+
+    #[test]
+    fn delegated_order_request_serializes_stp_policy_top_level_only() {
+        let request = CreateOrderRequest {
+            order: test_order_submission(),
+            order_type: OrderType::Gtc,
+            market_slug: "market".to_string(),
+            owner_id: 326,
+            on_behalf_of: Some(326),
+            post_only: None,
+            stp_policy: Some(StpPolicy::CancelTaker),
+            timestamp: None,
+            recv_window: None,
+        };
+
+        let value = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(value["stpPolicy"], json!("cancel_taker"));
+        assert!(value["order"].get("stpPolicy").is_none());
+    }
+
+    #[test]
+    fn delegated_order_request_omits_stp_policy_by_default() {
+        let request = CreateOrderRequest {
+            order: test_order_submission(),
+            order_type: OrderType::Gtc,
+            market_slug: "market".to_string(),
+            owner_id: 326,
+            on_behalf_of: Some(326),
+            post_only: None,
+            stp_policy: None,
+            timestamp: None,
+            recv_window: None,
+        };
+
+        let value = serde_json::to_value(&request).expect("request should serialize");
+        assert!(value.get("stpPolicy").is_none());
     }
 
     #[test]

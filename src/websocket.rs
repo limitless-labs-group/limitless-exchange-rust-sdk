@@ -696,6 +696,15 @@ impl WebSocketClient {
         self.on_typed("oraclePriceData", "oracle price data", handler)
     }
 
+    /// Subscribes to raw `orderEvent` frames.
+    ///
+    /// The frame is delivered untyped as [`serde_json::Value`], so any field is
+    /// already readable without a typed struct. A `type: CANCELLATION` frame may
+    /// carry an optional `reason` string; self-trade prevention reports a
+    /// canceled maker as `reason: STP_MAKER_CANCELLED`. A self-trade-prevented
+    /// taker reject is HTTP-only and never arrives here as a `reason`; on the
+    /// websocket it surfaces as a terminal `EXECUTION` mapped to `KILLED` with no
+    /// reason.
     pub fn on_order_event<F>(&self, handler: F) -> u64
     where
         F: Fn(Value) + Send + Sync + 'static,
