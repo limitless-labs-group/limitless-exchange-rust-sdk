@@ -12,6 +12,7 @@ All notable changes to the Limitless Exchange Rust SDK will be documented in thi
   - `OrderEvent::Unknown` absorbs lifecycle frames (`PLACEMENT`/`UPDATE`/`CANCELLATION`/`MINED`/`FAILED`).
 - The raw `WebSocketClient::on_order_event` handler is retained unchanged for callers that want the untyped `serde_json::Value`.
 - Added the runnable `websocket_order_events` example covering the typed `orderEvent` subscription flow.
+- Modeled the `POST /orders` `execution` response object on `OrderResponse` via the new optional `execution: Option<OrderExecution>` field, exposing the taker-delay outcome (`settlementStatus`, `eligibleAt`), settlement linkage (`tradeEventId`, `txHash`, `clientOrderId`), fees (`feeRateBps`, `effectiveFeeBps`), and the raw integer-string totals (`totalsRaw`). `settlementStatus` stays a plain string for forward-compatibility with server-added values. Additive and non-breaking.
 
 ### Changed
 

@@ -274,11 +274,56 @@ pub struct OrderMatch {
     pub order_id: String,
 }
 
+/// Raw integer-string totals for the taker leg of a `POST /orders` execution.
+///
+/// All six fields are decimal strings (raw integer strings, not floats).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderExecutionTotalsRaw {
+    pub contracts_gross: String,
+    pub contracts_fee: String,
+    pub contracts_net: String,
+    pub usd_gross: String,
+    pub usd_fee: String,
+    pub usd_net: String,
+}
+
+/// Taker-side execution summary returned inline on `POST /orders`.
+///
+/// `settlement_status` is intentionally a plain `String`, not a closed enum:
+/// the server adds values over time (e.g. STP introduces `"CANCELED"`), so a
+/// closed union would fail to deserialize on unknown values. Known values:
+/// `"UNMATCHED"`, `"MATCHED"`, `"MINED"`, `"CONFIRMED"`, `"RETRYING"`,
+/// `"FAILED"`, `"DELAYED"`. `"DELAYED"` means the taker order was accepted but
+/// is held by a per-market taker delay before being released to the matching
+/// engine.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderExecution {
+    pub matched: bool,
+    pub settlement_status: String,
+    #[serde(default)]
+    pub trade_event_id: Option<String>,
+    #[serde(default)]
+    pub tx_hash: Option<String>,
+    #[serde(default)]
+    pub client_order_id: Option<String>,
+    /// ISO-8601 timestamp present only when `settlement_status == "DELAYED"`:
+    /// the time the order is released to the matching engine.
+    #[serde(default)]
+    pub eligible_at: Option<String>,
+    pub fee_rate_bps: f64,
+    pub effective_fee_bps: f64,
+    pub totals_raw: OrderExecutionTotalsRaw,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrderResponse {
     pub order: CreatedOrder,
     #[serde(rename = "makerMatches", default)]
     pub maker_matches: Vec<OrderMatch>,
+    #[serde(default)]
+    pub execution: Option<OrderExecution>,
 }
 
 #[derive(Clone, Debug, Default)]
