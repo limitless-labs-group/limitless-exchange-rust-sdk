@@ -1,6 +1,6 @@
 [package]
 name = "limitless-exchange-rust-sdk"
-version = "1.0.13"
+version = "1.1.0"
 edition = "2021"
 authors = ["https://github.com/kuchro"]
 license = "MIT"

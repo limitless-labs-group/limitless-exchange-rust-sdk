@@ -296,6 +296,90 @@ pub struct MarketResolvedEvent {
     pub resolution_date: String,
 }
 
+/// Typed `orderEvent` payload.
+///
+/// All `orderEvent` frames arrive on the same socket.io event and are
+/// discriminated on the `type` field. `MATCHED` is the pre-settlement
+/// per-fill estimate (`source: "SETTLEMENT"`); `EXECUTION` is the FAK/FOK
+/// terminal outcome (`source: "OME"`). Lifecycle frames
+/// (`PLACEMENT`/`UPDATE`/`CANCELLATION`/`MINED`/`FAILED`) fall into `Unknown`;
+/// use the raw [`WebSocketClient::on_order_event`] handler for those.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type")]
+pub enum OrderEvent {
+    #[serde(rename = "MATCHED")]
+    Matched(MatchedOrderEvent),
+    #[serde(rename = "EXECUTION")]
+    Execution(ExecutionOrderEvent),
+    #[serde(other)]
+    Unknown,
+}
+
+/// Pre-settlement per-fill `MATCHED` frame (`source: "SETTLEMENT"`).
+///
+/// Monetary fields are JSON strings as emitted by settlement.
+/// `configured_fee_rate_bps` / `effective_fee_bps` are JSON numbers; the maker
+/// side reports `0`, the taker side a real estimate. `is_estimate` is `true`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchedOrderEvent {
+    pub source: String,
+    pub event_id: String,
+    pub price: String,
+    #[serde(default)]
+    pub amount_contracts: Option<String>,
+    #[serde(default)]
+    pub amount_collateral: Option<String>,
+    #[serde(default)]
+    pub fee_amount_contracts: Option<String>,
+    #[serde(default)]
+    pub fee_amount_collateral: Option<String>,
+    #[serde(default)]
+    pub configured_fee_rate_bps: Option<f64>,
+    #[serde(default)]
+    pub effective_fee_bps: Option<f64>,
+    #[serde(default)]
+    pub side: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub token_id: Option<String>,
+    #[serde(default)]
+    pub market_slug: Option<String>,
+    #[serde(default)]
+    pub order_id: Option<String>,
+    #[serde(default)]
+    pub taker_order_id: Option<String>,
+    #[serde(default)]
+    pub trade_event_id: Option<String>,
+    #[serde(default)]
+    pub is_estimate: Option<bool>,
+    pub timestamp: String,
+}
+
+/// FAK/FOK terminal `EXECUTION` frame (`source: "OME"`).
+///
+/// `price` and `remaining_size` arrive as JSON numbers from OME (the
+/// [`FlexFloat`] newtype also tolerates string encodings). `event_id` is the
+/// string form `"terminal:<orderId>"`. `status` is `FILLED`,
+/// `PARTIALLY_FILLED`, or `KILLED`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionOrderEvent {
+    pub source: String,
+    pub event_id: String,
+    pub status: String,
+    pub price: FlexFloat,
+    pub remaining_size: FlexFloat,
+    pub token: String,
+    pub side: String,
+    pub market_id: String,
+    pub order_id: String,
+    pub timestamp: String,
+    #[serde(default)]
+    pub user_id: Option<i64>,
+}
+
 #[derive(Clone)]
 pub struct WebSocketClient {
     inner: Arc<WebSocketInner>,
@@ -701,6 +785,13 @@ impl WebSocketClient {
         F: Fn(Value) + Send + Sync + 'static,
     {
         self.on("orderEvent", handler)
+    }
+
+    pub fn on_order_event_typed<F>(&self, handler: F) -> u64
+    where
+        F: Fn(OrderEvent) + Send + Sync + 'static,
+    {
+        self.on_typed("orderEvent", "order event", handler)
     }
 
     pub fn on_transaction<F>(&self, handler: F) -> u64
