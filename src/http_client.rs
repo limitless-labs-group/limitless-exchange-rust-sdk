@@ -234,6 +234,22 @@ impl HttpClient {
         .await
     }
 
+    pub async fn post_raw<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        self.do_request_raw(
+            Method::POST,
+            path,
+            Some(body),
+            options,
+            RequestExecutionConfig::default(),
+        )
+        .await
+    }
+
     pub async fn patch<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
         path: &str,
@@ -523,11 +539,158 @@ fn request_uri_for_signing(path: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::request_uri_for_signing;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+    };
+
+    use base64::Engine;
+    use serde_json::json;
+
+    use super::{request_uri_for_signing, HttpClient, RequestOptions};
+    use crate::{
+        errors::LimitlessError,
+        hmac::{compute_hmac_signature, HmacCredentials},
+    };
 
     #[test]
     fn request_uri_uses_path_and_query() {
         let value = request_uri_for_signing("/markets/active?limit=10").unwrap();
         assert_eq!(value, "/markets/active?limit=10");
+    }
+
+    fn spawn_server(status: u16, response_body: &'static str) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).expect("request read");
+                bytes.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&bytes);
+                let Some(header_end) = text.find("\r\n\r\n") else {
+                    continue;
+                };
+                let content_length = text[..header_end]
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+            let request = String::from_utf8(bytes).expect("utf8 request");
+            let _ = sender.send(request);
+            let reason = if status == 207 {
+                "Multi-Status"
+            } else if status == 409 {
+                "Conflict"
+            } else {
+                "Bad Request"
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            )
+            .expect("response write");
+        });
+        (format!("http://{address}"), receiver)
+    }
+
+    #[tokio::test]
+    async fn post_raw_allows_selected_status_and_signs_transmitted_bytes() {
+        let (base_url, request_rx) = spawn_server(409, r#"{"accepted":true}"#);
+        let secret = base64::engine::general_purpose::STANDARD.encode(b"test-secret");
+        let client = HttpClient::builder()
+            .base_url(base_url)
+            .hmac_credentials(HmacCredentials {
+                token_id: "token".to_string(),
+                secret: secret.clone(),
+            })
+            .build()
+            .expect("client");
+        let body = json!({"operations":[{"mode":"ALLOW_FAILURE"}]});
+
+        let response = client
+            .post_raw(
+                "/orders/cancel-replace",
+                &body,
+                RequestOptions::default().allow_status(409),
+            )
+            .await
+            .expect("409 should be accepted");
+        assert_eq!(response.status, 409);
+
+        let request = request_rx.recv().expect("captured request");
+        let (headers, transmitted_body) = request.split_once("\r\n\r\n").expect("request parts");
+        assert!(headers.starts_with("POST /orders/cancel-replace HTTP/1.1"));
+        let timestamp = header_value(headers, "lmts-timestamp");
+        let signature = header_value(headers, "lmts-signature");
+        let expected = compute_hmac_signature(
+            &secret,
+            timestamp,
+            "POST",
+            "/orders/cancel-replace",
+            transmitted_body,
+        )
+        .expect("signature");
+        assert_eq!(signature, expected);
+        assert_eq!(transmitted_body, serde_json::to_string(&body).unwrap());
+    }
+
+    #[tokio::test]
+    async fn post_status_policy_accepts_207_and_rejects_400() {
+        let (base_url, _) = spawn_server(207, r#"{"results":[]}"#);
+        let client = HttpClient::builder()
+            .base_url(base_url)
+            .api_key("key")
+            .build()
+            .expect("client");
+        let response = client
+            .post_raw(
+                "/orders/cancel-replace/batch",
+                &json!({}),
+                RequestOptions::default(),
+            )
+            .await
+            .expect("207 is successful");
+        assert_eq!(response.status, 207);
+
+        let (base_url, _) = spawn_server(400, r#"{"message":"invalid"}"#);
+        let client = HttpClient::builder()
+            .base_url(base_url)
+            .api_key("key")
+            .build()
+            .expect("client");
+        let error = client
+            .post_raw(
+                "/orders/cancel-replace",
+                &json!({}),
+                RequestOptions::default().allow_status(409),
+            )
+            .await
+            .expect_err("400 must remain an error");
+        assert!(matches!(error, LimitlessError::Api(api) if api.status == 400));
+    }
+
+    fn header_value<'a>(headers: &'a str, expected_name: &str) -> &'a str {
+        headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case(expected_name)
+                    .then_some(value.trim())
+            })
+            .expect("header")
     }
 }

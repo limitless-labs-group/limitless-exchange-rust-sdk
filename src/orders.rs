@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 use crate::{
     constants::{DEFAULT_CHAIN_ID, ZERO_ADDRESS},
     errors::{LimitlessError, Result},
-    http_client::HttpClient,
+    http_client::{HttpClient, RequestOptions},
     logger::{noop_logger, SharedLogger},
     markets::{MarketFetcher, Venue},
     portfolio::{PortfolioFetcher, UserProfile},
@@ -71,6 +71,16 @@ pub enum SignatureType {
     Eoa = 0,
     PolyProxy = 1,
     PolyGnosisSafe = 2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StpPolicy {
+    #[serde(rename = "cancel_both")]
+    CancelBoth,
+    #[serde(rename = "cancel_maker")]
+    CancelMaker,
+    #[serde(rename = "cancel_taker")]
+    CancelTaker,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -312,6 +322,10 @@ pub struct OrderExecution {
     /// the time the order is released to the matching engine.
     #[serde(default)]
     pub eligible_at: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub stp_maker_cancels: Option<Vec<String>>,
     pub fee_rate_bps: f64,
     pub effective_fee_bps: f64,
     pub totals_raw: OrderExecutionTotalsRaw,
@@ -348,6 +362,167 @@ pub struct UserData {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CancelResponse {
     pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum CancelTarget {
+    OrderId {
+        #[serde(rename = "orderId")]
+        order_id: String,
+    },
+    ClientOrderId {
+        #[serde(rename = "clientOrderId")]
+        client_order_id: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CancelReplaceMode {
+    #[serde(rename = "ALLOW_FAILURE")]
+    AllowFailure,
+    #[serde(rename = "STOP_ON_FAILURE")]
+    StopOnFailure,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReplacementOrderParams {
+    pub order_type: OrderType,
+    pub market_slug: String,
+    pub args: OrderArgs,
+    pub client_order_id: Option<String>,
+    pub timestamp: Option<i64>,
+    pub recv_window: Option<i64>,
+    pub stp_policy: Option<StpPolicy>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CancelReplaceParams {
+    pub cancel: CancelTarget,
+    pub replacement: ReplacementOrderParams,
+    pub mode: CancelReplaceMode,
+    pub on_behalf_of: Option<i32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelReplaceOrderSubmission {
+    pub salt: i64,
+    pub maker: String,
+    pub signer: String,
+    pub taker: String,
+    pub token_id: String,
+    pub maker_amount: i64,
+    pub taker_amount: i64,
+    pub expiration: String,
+    pub nonce: i32,
+    pub fee_rate_bps: i32,
+    pub side: Side,
+    pub signature_type: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelReplaceOrderPayload {
+    pub order: CancelReplaceOrderSubmission,
+    pub order_type: OrderType,
+    pub market_slug: String,
+    pub owner_id: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recv_window: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stp_policy: Option<StpPolicy>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelReplaceRequest {
+    pub cancel: CancelTarget,
+    pub replacement: CancelReplaceOrderPayload,
+    pub mode: CancelReplaceMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<i32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CancelReplaceBatchRequest {
+    pub operations: Vec<CancelReplaceRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelReplaceError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "status", deny_unknown_fields)]
+pub enum CancelReplaceCancelResult {
+    #[serde(rename = "SUCCESS")]
+    Success {
+        #[serde(rename = "orderId")]
+        order_id: String,
+        #[serde(rename = "clientOrderId", default)]
+        client_order_id: Option<String>,
+    },
+    #[serde(rename = "FAILURE")]
+    Failure { error: CancelReplaceError },
+    #[serde(rename = "UNKNOWN")]
+    Unknown { error: CancelReplaceError },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CancelReplaceSuccessData {
+    pub execution: OrderExecution,
+    pub order: CreatedOrder,
+    #[serde(default)]
+    pub maker_matches: Vec<OrderMatch>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelReplaceNotAttempted {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "status", deny_unknown_fields)]
+pub enum CancelReplaceReplacementResult {
+    #[serde(rename = "SUCCESS")]
+    Success { data: Box<CancelReplaceSuccessData> },
+    #[serde(rename = "FAILURE")]
+    Failure { error: CancelReplaceError },
+    #[serde(rename = "UNKNOWN")]
+    Unknown { error: CancelReplaceError },
+    #[serde(rename = "NOT_ATTEMPTED")]
+    NotAttempted(CancelReplaceNotAttempted),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CancelReplaceResult {
+    pub cancel: CancelReplaceCancelResult,
+    pub replacement: CancelReplaceReplacementResult,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CancelReplaceBatchResult {
+    pub index: usize,
+    pub cancel: CancelReplaceCancelResult,
+    pub replacement: CancelReplaceReplacementResult,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CancelReplaceBatchResponse {
+    pub results: Vec<CancelReplaceBatchResult>,
 }
 
 #[derive(Clone, Default)]
@@ -786,6 +961,87 @@ impl OrderClient {
         Ok(response.message)
     }
 
+    pub async fn cancel_replace(&self, params: CancelReplaceParams) -> Result<CancelReplaceResult> {
+        self.client.require_auth("CancelReplace")?;
+        let request = self.build_cancel_replace_request(params).await?;
+        self.client
+            .post_raw(
+                "/orders/cancel-replace",
+                &request,
+                RequestOptions::default().allow_status(409),
+            )
+            .await?
+            .json()
+    }
+
+    pub async fn cancel_replace_batch(
+        &self,
+        operations: Vec<CancelReplaceParams>,
+    ) -> Result<CancelReplaceBatchResponse> {
+        self.client.require_auth("CancelReplaceBatch")?;
+        if operations.is_empty() {
+            return Err(LimitlessError::invalid_input(
+                "cancel-replace batch must contain at least one operation",
+            ));
+        }
+        let mut requests = Vec::with_capacity(operations.len());
+        for operation in operations {
+            requests.push(self.build_cancel_replace_request(operation).await?);
+        }
+        self.client
+            .post(
+                "/orders/cancel-replace/batch",
+                &CancelReplaceBatchRequest {
+                    operations: requests,
+                },
+            )
+            .await
+    }
+
+    async fn build_cancel_replace_request(
+        &self,
+        params: CancelReplaceParams,
+    ) -> Result<CancelReplaceRequest> {
+        validate_cancel_replace_fields(
+            &params.cancel,
+            params.replacement.client_order_id.as_deref(),
+            params.on_behalf_of,
+        )?;
+        let receive_window = normalize_receive_window_options(
+            Some(ReceiveWindowOptions {
+                timestamp: params.replacement.timestamp,
+                recv_window: params.replacement.recv_window,
+            }),
+            current_unix_ms,
+        )?;
+        let user_data = self.ensure_user_data().await?;
+        let signing_config = self
+            .resolve_signing_config_for_market(&params.replacement.market_slug)
+            .await?;
+        let unsigned = self
+            .build_unsigned_order(params.replacement.args.clone())
+            .await?;
+        let signature = self.signer.sign_order(&unsigned, &signing_config)?;
+        let owner_id = params.on_behalf_of.unwrap_or(user_data.user_id);
+
+        Ok(CancelReplaceRequest {
+            cancel: params.cancel,
+            replacement: CancelReplaceOrderPayload {
+                order: cancel_replace_submission(unsigned, Some(signature)),
+                order_type: params.replacement.order_type,
+                market_slug: params.replacement.market_slug,
+                owner_id,
+                post_only: post_only_from_args(&params.replacement.args),
+                client_order_id: params.replacement.client_order_id,
+                timestamp: receive_window.timestamp,
+                recv_window: receive_window.recv_window,
+                stp_policy: params.replacement.stp_policy,
+            },
+            mode: params.mode,
+            on_behalf_of: params.on_behalf_of,
+        })
+    }
+
     pub async fn build_unsigned_order(&self, args: OrderArgs) -> Result<UnsignedOrder> {
         self.ensure_user_data().await?;
         let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
@@ -948,6 +1204,55 @@ pub(crate) fn current_unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Duration::from_millis(0));
     i64::try_from(now.as_millis()).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn cancel_replace_submission(
+    order: UnsignedOrder,
+    signature: Option<String>,
+) -> CancelReplaceOrderSubmission {
+    CancelReplaceOrderSubmission {
+        salt: order.salt,
+        maker: order.maker,
+        signer: order.signer,
+        taker: order.taker,
+        token_id: order.token_id,
+        maker_amount: order.maker_amount,
+        taker_amount: order.taker_amount,
+        expiration: order.expiration,
+        nonce: order.nonce,
+        fee_rate_bps: order.fee_rate_bps,
+        side: order.side,
+        signature_type: order.signature_type as u8,
+        price: order.price,
+        signature,
+    }
+}
+
+pub(crate) fn validate_cancel_replace_fields(
+    cancel: &CancelTarget,
+    client_order_id: Option<&str>,
+    on_behalf_of: Option<i32>,
+) -> Result<()> {
+    let target = match cancel {
+        CancelTarget::OrderId { order_id } => order_id,
+        CancelTarget::ClientOrderId { client_order_id } => client_order_id,
+    };
+    if target.is_empty() {
+        return Err(LimitlessError::invalid_input(
+            "cancel target must not be empty",
+        ));
+    }
+    if target.len() > 128 || client_order_id.is_some_and(|value| value.len() > 128) {
+        return Err(LimitlessError::invalid_input(
+            "client order IDs must not exceed 128 characters",
+        ));
+    }
+    if matches!(on_behalf_of, Some(value) if value <= 0) {
+        return Err(LimitlessError::invalid_input(
+            "OnBehalfOf must be a positive integer",
+        ));
+    }
+    Ok(())
 }
 
 pub fn validate_order_args(args: &OrderArgs) -> Result<()> {
@@ -1755,6 +2060,72 @@ mod tests {
         assert!(value.get("recvWindow").is_none());
         assert!(value["order"].get("timestamp").is_none());
         assert!(value["order"].get("recvWindow").is_none());
+    }
+
+    #[test]
+    fn cancel_replace_request_serializes_exact_shape() {
+        let request = CancelReplaceRequest {
+            cancel: CancelTarget::ClientOrderId {
+                client_order_id: "old-client-id".to_string(),
+            },
+            replacement: CancelReplaceOrderPayload {
+                order: cancel_replace_submission(
+                    test_unsigned_order_for_signer(),
+                    Some(EXPECTED_ORDER_SIGNATURE.to_string()),
+                ),
+                order_type: OrderType::Gtc,
+                market_slug: "test-market".to_string(),
+                owner_id: 42,
+                post_only: Some(true),
+                client_order_id: Some("new-client-id".to_string()),
+                timestamp: Some(1_770_000_000_000),
+                recv_window: Some(1500),
+                stp_policy: Some(StpPolicy::CancelBoth),
+            },
+            mode: CancelReplaceMode::StopOnFailure,
+            on_behalf_of: Some(42),
+        };
+
+        let value = serde_json::to_value(request).expect("request should serialize");
+        assert_eq!(value["cancel"], json!({"clientOrderId": "old-client-id"}));
+        assert_eq!(value["mode"], "STOP_ON_FAILURE");
+        assert_eq!(value["onBehalfOf"], 42);
+        assert_eq!(value["replacement"]["clientOrderId"], "new-client-id");
+        assert_eq!(value["replacement"]["recvWindow"], 1500);
+        assert_eq!(value["replacement"]["stpPolicy"], "cancel_both");
+        assert!(value["replacement"].get("onBehalfOf").is_none());
+        assert_eq!(
+            value["replacement"]["order"]["signature"],
+            EXPECTED_ORDER_SIGNATURE
+        );
+    }
+
+    #[test]
+    fn cancel_replace_response_rejects_contradictory_variants() {
+        let contradictory_cancel = json!({
+            "status": "SUCCESS",
+            "orderId": "order-1",
+            "error": {"code": "x", "message": "x"}
+        });
+        assert!(serde_json::from_value::<CancelReplaceCancelResult>(contradictory_cancel).is_err());
+
+        let contradictory_replacement = json!({
+            "status": "NOT_ATTEMPTED",
+            "error": {"code": "x", "message": "x"}
+        });
+        assert!(serde_json::from_value::<CancelReplaceReplacementResult>(
+            contradictory_replacement
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cancel_target_rejects_both_identifiers() {
+        assert!(serde_json::from_value::<CancelTarget>(json!({
+            "orderId": "order-1",
+            "clientOrderId": "client-1"
+        }))
+        .is_err());
     }
 
     #[test]

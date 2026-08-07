@@ -3,8 +3,11 @@ use crate::{
     http_client::HttpClient,
     logger::{noop_logger, SharedLogger},
     orders::{
-        normalize_receive_window_options, post_only_from_args, CancelResponse, OrderArgs,
-        OrderBuilder, OrderResponse, OrderType, ReceiveWindowOptions, Side, SignatureType,
+        cancel_replace_submission, normalize_receive_window_options, post_only_from_args,
+        validate_cancel_replace_fields, CancelReplaceBatchRequest, CancelReplaceBatchResponse,
+        CancelReplaceMode, CancelReplaceOrderPayload, CancelReplaceRequest, CancelReplaceResult,
+        CancelResponse, CancelTarget, OrderArgs, OrderBuilder, OrderResponse, OrderType,
+        ReceiveWindowOptions, ReplacementOrderParams, Side, SignatureType,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -155,6 +158,89 @@ impl DelegatedOrderService {
             .await?;
         Ok(response.message)
     }
+
+    pub async fn cancel_replace(
+        &self,
+        params: DelegatedCancelReplaceParams,
+    ) -> Result<CancelReplaceResult> {
+        self.client.require_auth("CancelReplaceDelegatedOrder")?;
+        let request = self.build_cancel_replace_request(params)?;
+        self.client
+            .post_raw(
+                "/orders/cancel-replace",
+                &request,
+                crate::http_client::RequestOptions::default().allow_status(409),
+            )
+            .await?
+            .json()
+    }
+
+    pub async fn cancel_replace_batch(
+        &self,
+        operations: Vec<DelegatedCancelReplaceParams>,
+    ) -> Result<CancelReplaceBatchResponse> {
+        self.client
+            .require_auth("CancelReplaceDelegatedOrderBatch")?;
+        if operations.is_empty() {
+            return Err(LimitlessError::invalid_input(
+                "cancel-replace batch must contain at least one operation",
+            ));
+        }
+        let requests = operations
+            .into_iter()
+            .map(|operation| self.build_cancel_replace_request(operation))
+            .collect::<Result<Vec<_>>>()?;
+        self.client
+            .post(
+                "/orders/cancel-replace/batch",
+                &CancelReplaceBatchRequest {
+                    operations: requests,
+                },
+            )
+            .await
+    }
+
+    fn build_cancel_replace_request(
+        &self,
+        params: DelegatedCancelReplaceParams,
+    ) -> Result<CancelReplaceRequest> {
+        validate_cancel_replace_fields(
+            &params.cancel,
+            params.replacement.client_order_id.as_deref(),
+            Some(params.on_behalf_of),
+        )?;
+        let receive_window = normalize_receive_window_options(
+            Some(ReceiveWindowOptions {
+                timestamp: params.replacement.timestamp,
+                recv_window: params.replacement.recv_window,
+            }),
+            crate::orders::current_unix_ms,
+        )?;
+        let fee_rate_bps = if params.fee_rate_bps <= 0 {
+            DEFAULT_DELEGATED_FEE_RATE_BPS
+        } else {
+            params.fee_rate_bps
+        };
+        let unsigned = OrderBuilder::new(crate::constants::ZERO_ADDRESS, fee_rate_bps, None)
+            .build_order(&params.replacement.args)?;
+
+        Ok(CancelReplaceRequest {
+            cancel: params.cancel,
+            replacement: CancelReplaceOrderPayload {
+                order: cancel_replace_submission(unsigned, None),
+                order_type: params.replacement.order_type,
+                market_slug: params.replacement.market_slug,
+                owner_id: params.on_behalf_of,
+                post_only: post_only_from_args(&params.replacement.args),
+                client_order_id: params.replacement.client_order_id,
+                timestamp: receive_window.timestamp,
+                recv_window: receive_window.recv_window,
+                stp_policy: params.replacement.stp_policy,
+            },
+            mode: params.mode,
+            on_behalf_of: Some(params.on_behalf_of),
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -164,6 +250,15 @@ pub struct CreateDelegatedOrderParams {
     pub on_behalf_of: i32,
     pub fee_rate_bps: i32,
     pub args: OrderArgs,
+}
+
+#[derive(Clone, Debug)]
+pub struct DelegatedCancelReplaceParams {
+    pub cancel: CancelTarget,
+    pub replacement: ReplacementOrderParams,
+    pub mode: CancelReplaceMode,
+    pub on_behalf_of: i32,
+    pub fee_rate_bps: i32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -362,5 +457,42 @@ mod tests {
 
         assert!(matches!(error, LimitlessError::InvalidInput(_)));
         assert!(error.to_string().contains("recv_window"));
+    }
+
+    #[test]
+    fn delegated_cancel_replace_omits_signature_and_nests_on_behalf_of_once() {
+        let service = DelegatedOrderService::new(
+            HttpClient::builder()
+                .api_key("test-api-key")
+                .build()
+                .expect("client"),
+            None,
+        );
+        let request = service
+            .build_cancel_replace_request(DelegatedCancelReplaceParams {
+                cancel: CancelTarget::OrderId {
+                    order_id: "34bd2f18-c58a-43f9-8574-ad7a0f337f7d".to_string(),
+                },
+                replacement: ReplacementOrderParams {
+                    order_type: OrderType::Gtc,
+                    market_slug: "market".to_string(),
+                    args: test_delegated_order_params().args,
+                    client_order_id: Some("replacement-1".to_string()),
+                    timestamp: Some(1_770_000_000_000),
+                    recv_window: Some(1500),
+                    stp_policy: Some(crate::orders::StpPolicy::CancelMaker),
+                },
+                mode: CancelReplaceMode::AllowFailure,
+                on_behalf_of: 326,
+                fee_rate_bps: 300,
+            })
+            .expect("request should build");
+
+        let value = serde_json::to_value(request).expect("request should serialize");
+        assert_eq!(value["onBehalfOf"], 326);
+        assert_eq!(value["replacement"]["ownerId"], 326);
+        assert!(value["replacement"].get("onBehalfOf").is_none());
+        assert!(value["replacement"]["order"].get("signature").is_none());
+        assert_eq!(value["replacement"]["stpPolicy"], "cancel_maker");
     }
 }
