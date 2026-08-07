@@ -203,6 +203,46 @@ let order = order_client
 
 `recv_window` must be between `1` and `10000` milliseconds. When `recv_window` is supplied without `timestamp`, the SDK stamps the current Unix time in milliseconds. Keep trading hosts NTP-synced; server clock skew tolerance is about one second. Do not retry a `425 Too Early` with the same payload; build a fresh order instead.
 
+### Cancel-Replace Orders
+
+Atomically cancel a resting order and submit its replacement in a single request via `POST /orders/cancel-replace`. Identify the order to cancel with `CancelTarget::OrderId` or `CancelTarget::ClientOrderId`, and set `mode` to `CancelReplaceMode::StopOnFailure` (skip the replacement if the cancel fails) or `CancelReplaceMode::AllowFailure`.
+
+```rust
+use limitless_exchange_rust_sdk::{
+    CancelReplaceMode, CancelReplaceParams, CancelTarget, GtcOrderArgs, OrderArgs,
+    OrderType, ReplacementOrderParams, Side,
+};
+
+let result = order_client
+    .cancel_replace(CancelReplaceParams {
+        cancel: CancelTarget::OrderId { order_id: "old-order-id".to_string() },
+        mode: CancelReplaceMode::StopOnFailure,
+        on_behalf_of: None,
+        replacement: ReplacementOrderParams {
+            order_type: OrderType::Gtc,
+            market_slug: market.slug.clone(),
+            args: OrderArgs::from(GtcOrderArgs {
+                token_id: market.outcomes[0].token_id.clone(),
+                side: Side::Buy,
+                price: 0.5,
+                size: 2.0,
+                expiration: None,
+                nonce: None,
+                taker: None,
+                post_only: false,
+            }),
+            client_order_id: None,
+            timestamp: None,
+            recv_window: None,
+            stp_policy: None,
+        },
+    })
+    .await?;
+// result.cancel and result.replacement each carry a per-leg status.
+```
+
+Replace many orders at once with `order_client.cancel_replace_batch(vec![...])`; the response `results` are index-aligned to the input. Each method has a `*_with_raw` sibling returning `SdkResponse<T>`, and partner integrations use the delegated `cancel_replace` / `cancel_replace_batch` (which set `on_behalf_of`). The single-order variant allows a `409` conflict through as a decodable result.
+
 ## Workflow Guide
 
 - Public market discovery: [examples/active_markets.rs](examples/active_markets.rs)
