@@ -25,6 +25,7 @@ use crate::{
     logger::{noop_logger, SharedLogger},
     markets::{MarketFetcher, Venue},
     portfolio::{PortfolioFetcher, UserProfile},
+    raw_response::SdkResponse,
 };
 
 static NUMERIC_REGEX: Lazy<Regex> =
@@ -884,6 +885,14 @@ impl OrderClient {
     }
 
     pub async fn create_order(&self, params: CreateOrderParams) -> Result<OrderResponse> {
+        Ok(self.create_order_with_raw(params).await?.data)
+    }
+
+    /// Raw-response sibling of [`OrderClient::create_order`].
+    pub async fn create_order_with_raw(
+        &self,
+        params: CreateOrderParams,
+    ) -> Result<SdkResponse<OrderResponse>> {
         self.create_order_internal(params, None).await
     }
 
@@ -896,6 +905,18 @@ impl OrderClient {
         params: CreateOrderParams,
         receive_window: ReceiveWindowOptions,
     ) -> Result<OrderResponse> {
+        Ok(self
+            .create_order_with_receive_window_and_raw(params, receive_window)
+            .await?
+            .data)
+    }
+
+    /// Raw-response sibling of [`OrderClient::create_order_with_receive_window`].
+    pub async fn create_order_with_receive_window_and_raw(
+        &self,
+        params: CreateOrderParams,
+        receive_window: ReceiveWindowOptions,
+    ) -> Result<SdkResponse<OrderResponse>> {
         self.create_order_internal(params, Some(receive_window))
             .await
     }
@@ -904,7 +925,7 @@ impl OrderClient {
         &self,
         params: CreateOrderParams,
         receive_window: Option<ReceiveWindowOptions>,
-    ) -> Result<OrderResponse> {
+    ) -> Result<SdkResponse<OrderResponse>> {
         self.client.require_auth("CreateOrder")?;
         let receive_window = normalize_receive_window_options(receive_window, current_unix_ms)?;
         let user_data = self.ensure_user_data().await?;
@@ -940,44 +961,67 @@ impl OrderClient {
             recv_window: receive_window.recv_window,
         };
 
-        self.client.post("/orders", &payload).await
+        let raw = self
+            .client
+            .post_raw("/orders", &payload, RequestOptions::default())
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn cancel(&self, order_id: &str) -> Result<String> {
+        Ok(self.cancel_with_raw(order_id).await?.data)
+    }
+
+    pub async fn cancel_with_raw(&self, order_id: &str) -> Result<SdkResponse<String>> {
         self.client.require_auth("Cancel")?;
-        let response: CancelResponse = self
-            .client
-            .delete(&format!("/orders/{}", urlencoding::encode(order_id)))
-            .await?;
-        Ok(response.message)
+        self.delete_message_with_raw(&format!("/orders/{}", urlencoding::encode(order_id)))
+            .await
     }
 
     pub async fn cancel_all(&self, market_slug: &str) -> Result<String> {
+        Ok(self.cancel_all_with_raw(market_slug).await?.data)
+    }
+
+    pub async fn cancel_all_with_raw(&self, market_slug: &str) -> Result<SdkResponse<String>> {
         self.client.require_auth("CancelAll")?;
-        let response: CancelResponse = self
-            .client
-            .delete(&format!("/orders/all/{}", urlencoding::encode(market_slug)))
-            .await?;
-        Ok(response.message)
+        self.delete_message_with_raw(&format!("/orders/all/{}", urlencoding::encode(market_slug)))
+            .await
     }
 
     pub async fn cancel_replace(&self, params: CancelReplaceParams) -> Result<CancelReplaceResult> {
+        Ok(self.cancel_replace_with_raw(params).await?.data)
+    }
+
+    pub async fn cancel_replace_with_raw(
+        &self,
+        params: CancelReplaceParams,
+    ) -> Result<SdkResponse<CancelReplaceResult>> {
         self.client.require_auth("CancelReplace")?;
         let request = self.build_cancel_replace_request(params).await?;
-        self.client
+        let raw = self
+            .client
             .post_raw(
                 "/orders/cancel-replace",
                 &request,
                 RequestOptions::default().allow_status(409),
             )
-            .await?
-            .json()
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn cancel_replace_batch(
         &self,
         operations: Vec<CancelReplaceParams>,
     ) -> Result<CancelReplaceBatchResponse> {
+        Ok(self.cancel_replace_batch_with_raw(operations).await?.data)
+    }
+
+    pub async fn cancel_replace_batch_with_raw(
+        &self,
+        operations: Vec<CancelReplaceParams>,
+    ) -> Result<SdkResponse<CancelReplaceBatchResponse>> {
         self.client.require_auth("CancelReplaceBatch")?;
         if operations.is_empty() {
             return Err(LimitlessError::invalid_input(
@@ -988,14 +1032,30 @@ impl OrderClient {
         for operation in operations {
             requests.push(self.build_cancel_replace_request(operation).await?);
         }
-        self.client
-            .post(
+        let raw = self
+            .client
+            .post_raw(
                 "/orders/cancel-replace/batch",
                 &CancelReplaceBatchRequest {
                     operations: requests,
                 },
+                RequestOptions::default(),
             )
-            .await
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
+    }
+
+    async fn delete_message_with_raw(&self, path: &str) -> Result<SdkResponse<String>> {
+        let raw = self
+            .client
+            .delete_raw(path, RequestOptions::default())
+            .await?;
+        let response: CancelResponse = raw.json()?;
+        Ok(SdkResponse {
+            data: response.message,
+            raw,
+        })
     }
 
     async fn build_cancel_replace_request(

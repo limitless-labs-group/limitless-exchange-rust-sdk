@@ -1,6 +1,6 @@
 use crate::{
     errors::{LimitlessError, Result},
-    http_client::HttpClient,
+    http_client::{HttpClient, RequestOptions},
     logger::{noop_logger, SharedLogger},
     orders::{
         cancel_replace_submission, normalize_receive_window_options, post_only_from_args,
@@ -9,6 +9,7 @@ use crate::{
         CancelResponse, CancelTarget, OrderArgs, OrderBuilder, OrderResponse, OrderType,
         ReceiveWindowOptions, ReplacementOrderParams, Side, SignatureType,
     },
+    raw_response::SdkResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,14 @@ impl DelegatedOrderService {
     }
 
     pub async fn create_order(&self, params: CreateDelegatedOrderParams) -> Result<OrderResponse> {
+        Ok(self.create_order_with_raw(params).await?.data)
+    }
+
+    /// Raw-response sibling of [`DelegatedOrderService::create_order`].
+    pub async fn create_order_with_raw(
+        &self,
+        params: CreateDelegatedOrderParams,
+    ) -> Result<SdkResponse<OrderResponse>> {
         self.create_order_internal(params, None).await
     }
 
@@ -41,6 +50,18 @@ impl DelegatedOrderService {
         params: CreateDelegatedOrderParams,
         receive_window: ReceiveWindowOptions,
     ) -> Result<OrderResponse> {
+        Ok(self
+            .create_order_with_receive_window_and_raw(params, receive_window)
+            .await?
+            .data)
+    }
+
+    /// Raw-response sibling of [`DelegatedOrderService::create_order_with_receive_window`].
+    pub async fn create_order_with_receive_window_and_raw(
+        &self,
+        params: CreateDelegatedOrderParams,
+        receive_window: ReceiveWindowOptions,
+    ) -> Result<SdkResponse<OrderResponse>> {
         self.create_order_internal(params, Some(receive_window))
             .await
     }
@@ -49,7 +70,7 @@ impl DelegatedOrderService {
         &self,
         params: CreateDelegatedOrderParams,
         receive_window: Option<ReceiveWindowOptions>,
-    ) -> Result<OrderResponse> {
+    ) -> Result<SdkResponse<OrderResponse>> {
         self.client.require_auth("CreateDelegatedOrder")?;
         if params.on_behalf_of <= 0 {
             return Err(LimitlessError::invalid_input(
@@ -96,44 +117,58 @@ impl DelegatedOrderService {
             recv_window: receive_window.recv_window,
         };
 
-        self.client.post("/orders", &payload).await
+        let raw = self
+            .client
+            .post_raw("/orders", &payload, RequestOptions::default())
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn cancel(&self, order_id: &str) -> Result<String> {
+        Ok(self.cancel_with_raw(order_id).await?.data)
+    }
+
+    pub async fn cancel_with_raw(&self, order_id: &str) -> Result<SdkResponse<String>> {
         self.client.require_auth("CancelDelegatedOrder")?;
-        let response: CancelResponse = self
-            .client
-            .delete(&format!("/orders/{}", urlencoding::encode(order_id)))
-            .await?;
-        Ok(response.message)
+        self.delete_message_with_raw(&format!("/orders/{}", urlencoding::encode(order_id)))
+            .await
     }
 
     pub async fn cancel_on_behalf_of(&self, order_id: &str, on_behalf_of: i32) -> Result<String> {
+        Ok(self
+            .cancel_on_behalf_of_with_raw(order_id, on_behalf_of)
+            .await?
+            .data)
+    }
+
+    pub async fn cancel_on_behalf_of_with_raw(
+        &self,
+        order_id: &str,
+        on_behalf_of: i32,
+    ) -> Result<SdkResponse<String>> {
         self.client.require_auth("CancelDelegatedOrder")?;
         if on_behalf_of <= 0 {
             return Err(LimitlessError::invalid_input(
                 "OnBehalfOf must be a positive integer",
             ));
         }
-
-        let response: CancelResponse = self
-            .client
-            .delete(&format!(
-                "/orders/{}?onBehalfOf={}",
-                urlencoding::encode(order_id),
-                on_behalf_of
-            ))
-            .await?;
-        Ok(response.message)
+        self.delete_message_with_raw(&format!(
+            "/orders/{}?onBehalfOf={}",
+            urlencoding::encode(order_id),
+            on_behalf_of
+        ))
+        .await
     }
 
     pub async fn cancel_all(&self, market_slug: &str) -> Result<String> {
+        Ok(self.cancel_all_with_raw(market_slug).await?.data)
+    }
+
+    pub async fn cancel_all_with_raw(&self, market_slug: &str) -> Result<SdkResponse<String>> {
         self.client.require_auth("CancelAllDelegatedOrders")?;
-        let response: CancelResponse = self
-            .client
-            .delete(&format!("/orders/all/{}", urlencoding::encode(market_slug)))
-            .await?;
-        Ok(response.message)
+        self.delete_message_with_raw(&format!("/orders/all/{}", urlencoding::encode(market_slug)))
+            .await
     }
 
     pub async fn cancel_all_on_behalf_of(
@@ -141,44 +176,67 @@ impl DelegatedOrderService {
         market_slug: &str,
         on_behalf_of: i32,
     ) -> Result<String> {
+        Ok(self
+            .cancel_all_on_behalf_of_with_raw(market_slug, on_behalf_of)
+            .await?
+            .data)
+    }
+
+    pub async fn cancel_all_on_behalf_of_with_raw(
+        &self,
+        market_slug: &str,
+        on_behalf_of: i32,
+    ) -> Result<SdkResponse<String>> {
         self.client.require_auth("CancelAllDelegatedOrders")?;
         if on_behalf_of <= 0 {
             return Err(LimitlessError::invalid_input(
                 "OnBehalfOf must be a positive integer",
             ));
         }
-
-        let response: CancelResponse = self
-            .client
-            .delete(&format!(
-                "/orders/all/{}?onBehalfOf={}",
-                urlencoding::encode(market_slug),
-                on_behalf_of
-            ))
-            .await?;
-        Ok(response.message)
+        self.delete_message_with_raw(&format!(
+            "/orders/all/{}?onBehalfOf={}",
+            urlencoding::encode(market_slug),
+            on_behalf_of
+        ))
+        .await
     }
 
     pub async fn cancel_replace(
         &self,
         params: DelegatedCancelReplaceParams,
     ) -> Result<CancelReplaceResult> {
+        Ok(self.cancel_replace_with_raw(params).await?.data)
+    }
+
+    pub async fn cancel_replace_with_raw(
+        &self,
+        params: DelegatedCancelReplaceParams,
+    ) -> Result<SdkResponse<CancelReplaceResult>> {
         self.client.require_auth("CancelReplaceDelegatedOrder")?;
         let request = self.build_cancel_replace_request(params)?;
-        self.client
+        let raw = self
+            .client
             .post_raw(
                 "/orders/cancel-replace",
                 &request,
-                crate::http_client::RequestOptions::default().allow_status(409),
+                RequestOptions::default().allow_status(409),
             )
-            .await?
-            .json()
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn cancel_replace_batch(
         &self,
         operations: Vec<DelegatedCancelReplaceParams>,
     ) -> Result<CancelReplaceBatchResponse> {
+        Ok(self.cancel_replace_batch_with_raw(operations).await?.data)
+    }
+
+    pub async fn cancel_replace_batch_with_raw(
+        &self,
+        operations: Vec<DelegatedCancelReplaceParams>,
+    ) -> Result<SdkResponse<CancelReplaceBatchResponse>> {
         self.client
             .require_auth("CancelReplaceDelegatedOrderBatch")?;
         if operations.is_empty() {
@@ -190,14 +248,30 @@ impl DelegatedOrderService {
             .into_iter()
             .map(|operation| self.build_cancel_replace_request(operation))
             .collect::<Result<Vec<_>>>()?;
-        self.client
-            .post(
+        let raw = self
+            .client
+            .post_raw(
                 "/orders/cancel-replace/batch",
                 &CancelReplaceBatchRequest {
                     operations: requests,
                 },
+                RequestOptions::default(),
             )
-            .await
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
+    }
+
+    async fn delete_message_with_raw(&self, path: &str) -> Result<SdkResponse<String>> {
+        let raw = self
+            .client
+            .delete_raw(path, RequestOptions::default())
+            .await?;
+        let response: CancelResponse = raw.json()?;
+        Ok(SdkResponse {
+            data: response.message,
+            raw,
+        })
     }
 
     fn build_cancel_replace_request(

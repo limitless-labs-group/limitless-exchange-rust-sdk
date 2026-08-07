@@ -1,3 +1,4 @@
+pub mod amm;
 pub mod api_tokens;
 pub mod client;
 pub mod constants;
@@ -11,11 +12,13 @@ pub mod markets;
 pub mod orders;
 pub mod partner_accounts;
 pub mod portfolio;
+pub mod raw_response;
 pub mod retry;
 pub mod server_wallets;
 mod time_utils;
 pub mod websocket;
 
+pub use amm::*;
 pub use api_tokens::*;
 pub use client::*;
 pub use constants::*;
@@ -29,6 +32,7 @@ pub use markets::*;
 pub use orders::*;
 pub use partner_accounts::*;
 pub use portfolio::*;
+pub use raw_response::*;
 pub use retry::*;
 pub use server_wallets::*;
 pub use websocket::*;

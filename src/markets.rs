@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::form_urlencoded::Serializer;
 
-use crate::{errors::Result, http_client::HttpClient};
+use crate::{
+    errors::Result,
+    http_client::{HttpClient, RequestOptions},
+    raw_response::SdkResponse,
+};
 
 #[derive(Clone)]
 pub struct MarketFetcher {
@@ -24,37 +28,38 @@ impl MarketFetcher {
         &self,
         params: Option<&ActiveMarketsParams>,
     ) -> Result<ActiveMarketsResponse> {
-        let mut endpoint = "/markets/active".to_string();
-        if let Some(params) = params {
-            let mut query = Serializer::new(String::new());
-            if let Some(limit) = params.limit {
-                query.append_pair("limit", &limit.to_string());
-            }
-            if let Some(page) = params.page {
-                query.append_pair("page", &page.to_string());
-            }
-            if let Some(sort_by) = &params.sort_by {
-                query.append_pair("sortBy", sort_by.as_ref());
-            }
-            let encoded = query.finish();
-            if !encoded.is_empty() {
-                endpoint.push('?');
-                endpoint.push_str(&encoded);
-            }
-        }
+        Ok(self.get_active_markets_with_raw(params).await?.data)
+    }
 
-        let mut response: ActiveMarketsResponse = self.client.get(&endpoint).await?;
-        for market in &mut response.data {
+    pub async fn get_active_markets_with_raw(
+        &self,
+        params: Option<&ActiveMarketsParams>,
+    ) -> Result<SdkResponse<ActiveMarketsResponse>> {
+        let endpoint = active_markets_endpoint(params);
+        let raw = self
+            .client
+            .get_raw(&endpoint, RequestOptions::default())
+            .await?;
+        let mut data: ActiveMarketsResponse = raw.json()?;
+        for market in &mut data.data {
             market.client = Some(self.client.clone());
         }
-        Ok(response)
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn get_market(&self, slug: &str) -> Result<Market> {
-        let mut market: Market = self
+        Ok(self.get_market_with_raw(slug).await?.data)
+    }
+
+    pub async fn get_market_with_raw(&self, slug: &str) -> Result<SdkResponse<Market>> {
+        let raw = self
             .client
-            .get(&format!("/markets/{}", urlencoding::encode(slug)))
+            .get_raw(
+                &format!("/markets/{}", urlencoding::encode(slug)),
+                RequestOptions::default(),
+            )
             .await?;
+        let mut market: Market = raw.json()?;
         market.client = Some(self.client.clone());
 
         if let Some(venue) = market.venue.clone() {
@@ -63,7 +68,7 @@ impl MarketFetcher {
                 .unwrap_or_else(|err| err.into_inner())
                 .insert(slug.to_string(), venue);
         }
-        Ok(market)
+        Ok(SdkResponse { data: market, raw })
     }
 
     pub fn get_venue(&self, slug: &str) -> Option<Venue> {
@@ -75,20 +80,62 @@ impl MarketFetcher {
     }
 
     pub async fn get_order_book(&self, slug: &str) -> Result<OrderBook> {
-        self.client
-            .get(&format!("/markets/{}/orderbook", urlencoding::encode(slug)))
-            .await
+        Ok(self.get_order_book_with_raw(slug).await?.data)
+    }
+
+    pub async fn get_order_book_with_raw(&self, slug: &str) -> Result<SdkResponse<OrderBook>> {
+        let raw = self
+            .client
+            .get_raw(
+                &format!("/markets/{}/orderbook", urlencoding::encode(slug)),
+                RequestOptions::default(),
+            )
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn get_user_orders(&self, slug: &str) -> Result<Vec<UserOrder>> {
-        self.client.require_auth("get_user_orders")?;
-        self.client
-            .get(&format!(
-                "/markets/{}/user-orders",
-                urlencoding::encode(slug)
-            ))
-            .await
+        Ok(self.get_user_orders_with_raw(slug).await?.data)
     }
+
+    pub async fn get_user_orders_with_raw(
+        &self,
+        slug: &str,
+    ) -> Result<SdkResponse<Vec<UserOrder>>> {
+        self.client.require_auth("get_user_orders")?;
+        let raw = self
+            .client
+            .get_raw(
+                &format!("/markets/{}/user-orders", urlencoding::encode(slug)),
+                RequestOptions::default(),
+            )
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
+    }
+}
+
+fn active_markets_endpoint(params: Option<&ActiveMarketsParams>) -> String {
+    let mut endpoint = "/markets/active".to_string();
+    if let Some(params) = params {
+        let mut query = Serializer::new(String::new());
+        if let Some(limit) = params.limit {
+            query.append_pair("limit", &limit.to_string());
+        }
+        if let Some(page) = params.page {
+            query.append_pair("page", &page.to_string());
+        }
+        if let Some(sort_by) = &params.sort_by {
+            query.append_pair("sortBy", sort_by.as_ref());
+        }
+        let encoded = query.finish();
+        if !encoded.is_empty() {
+            endpoint.push('?');
+            endpoint.push_str(&encoded);
+        }
+    }
+    endpoint
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

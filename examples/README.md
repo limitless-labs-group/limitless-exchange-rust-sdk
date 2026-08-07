@@ -24,6 +24,8 @@ Available examples:
 - `partner_account_allowances`
 - `e2e_fok_flow`
 - `server_wallet_redeem_withdraw`
+- `amm_trading`
+- `raw_response`
 - `websocket_orderbook`
 - `websocket_positions`
 - `websocket_order_events`
@@ -68,6 +70,18 @@ Partner server-wallet allowance recovery:
 - These calls require `LIMITLESS_API_TOKEN_ID` and `LIMITLESS_API_TOKEN_SECRET` for a token with `account_creation` and `delegated_signing` scopes.
 - A retry response with `submitted` targets means that retry request submitted a sponsored transaction or user operation; poll `check_allowances` again after a short delay.
 - Retry `429` and `409` responses are returned as `LimitlessError::Api`; use `status == 429` to wait for `retryAfterSeconds` from the raw body, and `status == 409` to wait briefly before checking status again.
+
+Partner AMM trading (`amm_trading`):
+
+- Requires `LIMITLESS_API_TOKEN_ID` and `LIMITLESS_API_TOKEN_SECRET` for a token holding both `trading` and `delegated_signing` scopes. Legacy API keys are rejected. Privy identity auth is also supported via the `*_with_identity` methods.
+- `LIMITLESS_AMM_MARKET` (slug or checksummed FPMM address), `LIMITLESS_AMM_COLLATERAL_AMOUNT` (positive integer base units), and `LIMITLESS_AMM_IDEMPOTENCY_KEY` are required.
+- Optional: `LIMITLESS_ON_BEHALF_OF` (sub-account profile id), `LIMITLESS_AMM_OUTCOME` (0 = YES default, 1 = NO), `LIMITLESS_AMM_SLIPPAGE_BPS` (0..1000), `LIMITLESS_AMM_SKIP_BUY=1` to run only the allowance flow.
+- The example runs `ensure_allowance` (check → approve-once → poll check) then `buy_with_raw`. Buy/sell never check or submit allowances themselves; retry timed-out trades with the exact same params + idempotency key.
+
+Raw HTTP responses (`raw_response`):
+
+- Every API-backed service method has a `*_with_raw` sibling returning `SdkResponse<T> { data, raw }`. `raw` exposes `status`, `headers`, and `body` bytes; `data` is the same decoded value the base method returns.
+- The `raw_response` example is a public read and needs no authentication.
 
 Order-management examples:
 

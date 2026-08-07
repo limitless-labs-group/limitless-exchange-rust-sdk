@@ -274,18 +274,114 @@ impl HttpClient {
         .await
     }
 
-    pub async fn delete_with_identity(&self, path: &str, identity_token: &str) -> Result<()> {
+    pub async fn patch_raw<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        self.do_request_raw(
+            Method::PATCH,
+            path,
+            Some(body),
+            options,
+            RequestExecutionConfig::default(),
+        )
+        .await
+    }
+
+    pub async fn delete_raw(&self, path: &str, options: RequestOptions) -> Result<RawResponse> {
         self.do_request_raw(
             Method::DELETE,
             path,
             Option::<&()>::None,
-            RequestOptions::default(),
+            options,
+            RequestExecutionConfig::default(),
+        )
+        .await
+    }
+
+    pub async fn post_raw_with_identity<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        identity_token: &str,
+        body: &B,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        self.do_request_raw(
+            Method::POST,
+            path,
+            Some(body),
+            options,
             RequestExecutionConfig {
                 extra_headers: HashMap::new(),
                 identity_token: Some(identity_token.to_string()),
             },
         )
-        .await?;
+        .await
+    }
+
+    pub async fn post_raw_with_headers<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+        extra_headers: HashMap<String, String>,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        self.do_request_raw(
+            Method::POST,
+            path,
+            Some(body),
+            options,
+            RequestExecutionConfig {
+                extra_headers,
+                identity_token: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_raw_with_identity(
+        &self,
+        path: &str,
+        identity_token: &str,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        self.do_request_raw(
+            Method::GET,
+            path,
+            Option::<&()>::None,
+            options,
+            RequestExecutionConfig {
+                extra_headers: HashMap::new(),
+                identity_token: Some(identity_token.to_string()),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_raw_with_identity(
+        &self,
+        path: &str,
+        identity_token: &str,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        self.do_request_raw(
+            Method::DELETE,
+            path,
+            Option::<&()>::None,
+            options,
+            RequestExecutionConfig {
+                extra_headers: HashMap::new(),
+                identity_token: Some(identity_token.to_string()),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_with_identity(&self, path: &str, identity_token: &str) -> Result<()> {
+        self.delete_raw_with_identity(path, identity_token, RequestOptions::default())
+            .await?;
         Ok(())
     }
 

@@ -8,6 +8,7 @@ use crate::{
     errors::{LimitlessError, Result},
     http_client::{HttpClient, RequestOptions},
     markets::Market,
+    raw_response::SdkResponse,
 };
 
 const MAX_REDIRECT_DEPTH: usize = 3;
@@ -23,10 +24,21 @@ impl MarketPageFetcher {
     }
 
     pub async fn get_navigation(&self) -> Result<Vec<NavigationNode>> {
-        self.client.get("/navigation").await
+        Ok(self.get_navigation_with_raw().await?.data)
+    }
+
+    pub async fn get_navigation_with_raw(&self) -> Result<SdkResponse<Vec<NavigationNode>>> {
+        self.get_with_raw("/navigation").await
     }
 
     pub async fn get_market_page_by_path(&self, path: &str) -> Result<MarketPage> {
+        Ok(self.get_market_page_by_path_with_raw(path).await?.data)
+    }
+
+    pub async fn get_market_page_by_path_with_raw(
+        &self,
+        path: &str,
+    ) -> Result<SdkResponse<MarketPage>> {
         let mut current_path = path.to_string();
 
         for depth in 0..=MAX_REDIRECT_DEPTH {
@@ -34,14 +46,16 @@ impl MarketPageFetcher {
             query.append_pair("path", &current_path);
             let endpoint = format!("/market-pages/by-path?{}", query.finish());
 
-            let response = self
+            let raw = self
                 .client
                 .get_raw(&endpoint, RequestOptions::default().allow_status(301))
                 .await?;
 
-            if response.status == 200 {
-                return response.json();
+            if raw.status == 200 {
+                let data = raw.json()?;
+                return Ok(SdkResponse { data, raw });
             }
+            let response = raw;
             if response.status != 301 {
                 return Err(LimitlessError::invalid_input(format!(
                     "unexpected response status: {}",
@@ -112,6 +126,14 @@ impl MarketPageFetcher {
         page_id: &str,
         params: Option<&MarketPageMarketsParams>,
     ) -> Result<MarketPageMarketsResponse> {
+        Ok(self.get_markets_with_raw(page_id, params).await?.data)
+    }
+
+    pub async fn get_markets_with_raw(
+        &self,
+        page_id: &str,
+        params: Option<&MarketPageMarketsParams>,
+    ) -> Result<SdkResponse<MarketPageMarketsResponse>> {
         if let Some(params) = params {
             if params.cursor.is_some() && params.page.is_some() {
                 return Err(LimitlessError::invalid_input(
@@ -152,22 +174,36 @@ impl MarketPageFetcher {
             endpoint.push_str(&encoded);
         }
 
-        let response: MarketPageMarketsResponse = self.client.get(&endpoint).await?;
+        let raw = self
+            .client
+            .get_raw(&endpoint, RequestOptions::default())
+            .await?;
+        let response: MarketPageMarketsResponse = raw.json()?;
         if response.pagination.is_none() && response.cursor.is_none() {
             return Err(LimitlessError::invalid_input(
                 "invalid market-page response: expected `pagination` or `cursor` metadata",
             ));
         }
-        Ok(response)
+        Ok(SdkResponse {
+            data: response,
+            raw,
+        })
     }
 
     pub async fn get_property_keys(&self) -> Result<Vec<PropertyKey>> {
-        self.client.get("/property-keys").await
+        Ok(self.get_property_keys_with_raw().await?.data)
+    }
+
+    pub async fn get_property_keys_with_raw(&self) -> Result<SdkResponse<Vec<PropertyKey>>> {
+        self.get_with_raw("/property-keys").await
     }
 
     pub async fn get_property_key(&self, id: &str) -> Result<PropertyKey> {
-        self.client
-            .get(&format!("/property-keys/{}", urlencoding::encode(id)))
+        Ok(self.get_property_key_with_raw(id).await?.data)
+    }
+
+    pub async fn get_property_key_with_raw(&self, id: &str) -> Result<SdkResponse<PropertyKey>> {
+        self.get_with_raw(&format!("/property-keys/{}", urlencoding::encode(id)))
             .await
     }
 
@@ -176,6 +212,17 @@ impl MarketPageFetcher {
         key_id: &str,
         parent_id: Option<&str>,
     ) -> Result<Vec<PropertyOption>> {
+        Ok(self
+            .get_property_options_with_raw(key_id, parent_id)
+            .await?
+            .data)
+    }
+
+    pub async fn get_property_options_with_raw(
+        &self,
+        key_id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<SdkResponse<Vec<PropertyOption>>> {
         let mut endpoint = format!("/property-keys/{}/options", urlencoding::encode(key_id));
         if let Some(parent_id) = parent_id.filter(|value| !value.is_empty()) {
             let mut query = Serializer::new(String::new());
@@ -183,7 +230,16 @@ impl MarketPageFetcher {
             endpoint.push('?');
             endpoint.push_str(&query.finish());
         }
-        self.client.get(&endpoint).await
+        self.get_with_raw(&endpoint).await
+    }
+
+    async fn get_with_raw<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<SdkResponse<T>> {
+        let raw = self.client.get_raw(path, RequestOptions::default()).await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 }
 

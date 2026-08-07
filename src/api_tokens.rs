@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::{LimitlessError, Result},
-    http_client::HttpClient,
+    http_client::{HttpClient, RequestOptions},
+    raw_response::SdkResponse,
 };
 
 #[derive(Clone)]
@@ -20,42 +21,92 @@ impl ApiTokenService {
         identity_token: &str,
         input: &DeriveApiTokenInput,
     ) -> Result<DeriveApiTokenResponse> {
+        Ok(self
+            .derive_token_with_raw(identity_token, input)
+            .await?
+            .data)
+    }
+
+    pub async fn derive_token_with_raw(
+        &self,
+        identity_token: &str,
+        input: &DeriveApiTokenInput,
+    ) -> Result<SdkResponse<DeriveApiTokenResponse>> {
         if identity_token.trim().is_empty() {
             return Err(LimitlessError::invalid_input(
                 "identity token is required for derive_token",
             ));
         }
-        self.client
-            .post_with_identity("/auth/api-tokens/derive", identity_token, input)
-            .await
+        let raw = self
+            .client
+            .post_raw_with_identity(
+                "/auth/api-tokens/derive",
+                identity_token,
+                input,
+                RequestOptions::default(),
+            )
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn list_tokens(&self) -> Result<Vec<ApiToken>> {
+        Ok(self.list_tokens_with_raw().await?.data)
+    }
+
+    pub async fn list_tokens_with_raw(&self) -> Result<SdkResponse<Vec<ApiToken>>> {
         self.client.require_auth("list_tokens")?;
-        self.client.get("/auth/api-tokens").await
+        let raw = self
+            .client
+            .get_raw("/auth/api-tokens", RequestOptions::default())
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn get_capabilities(&self, identity_token: &str) -> Result<PartnerCapabilities> {
+        Ok(self.get_capabilities_with_raw(identity_token).await?.data)
+    }
+
+    pub async fn get_capabilities_with_raw(
+        &self,
+        identity_token: &str,
+    ) -> Result<SdkResponse<PartnerCapabilities>> {
         if identity_token.trim().is_empty() {
             return Err(LimitlessError::invalid_input(
                 "identity token is required for get_capabilities",
             ));
         }
-        self.client
-            .get_with_identity("/auth/api-tokens/capabilities", identity_token)
-            .await
+        let raw = self
+            .client
+            .get_raw_with_identity(
+                "/auth/api-tokens/capabilities",
+                identity_token,
+                RequestOptions::default(),
+            )
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn revoke_token(&self, token_id: &str) -> Result<String> {
+        Ok(self.revoke_token_with_raw(token_id).await?.data)
+    }
+
+    pub async fn revoke_token_with_raw(&self, token_id: &str) -> Result<SdkResponse<String>> {
         self.client.require_auth("revoke_token")?;
-        let response: MessageResponse = self
+        let raw = self
             .client
-            .delete(&format!(
-                "/auth/api-tokens/{}",
-                urlencoding::encode(token_id)
-            ))
+            .delete_raw(
+                &format!("/auth/api-tokens/{}", urlencoding::encode(token_id)),
+                RequestOptions::default(),
+            )
             .await?;
-        Ok(response.message)
+        let message: MessageResponse = raw.json()?;
+        Ok(SdkResponse {
+            data: message.message,
+            raw,
+        })
     }
 }
 
