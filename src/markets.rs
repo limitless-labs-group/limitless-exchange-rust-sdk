@@ -203,7 +203,8 @@ pub struct PriceOracleMetadata {
     pub pyth_address: String,
     pub symbol: String,
     pub name: String,
-    pub logo: String,
+    #[serde(default)]
+    pub logo: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -248,8 +249,8 @@ pub struct OrderBook {
     pub max_spread: String,
     #[serde(rename = "minSize")]
     pub min_size: String,
-    #[serde(rename = "lastTradePrice")]
-    pub last_trade_price: f64,
+    #[serde(rename = "lastTradePrice", default)]
+    pub last_trade_price: Option<f64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

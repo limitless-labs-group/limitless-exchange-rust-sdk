@@ -32,6 +32,11 @@ All notable changes to the Limitless Exchange Rust SDK will be documented in thi
 - `ExecutionOrderEvent::price` and `ExecutionOrderEvent::remaining_size` use `FlexFloat` to accept the JSON numbers OME emits (the static type previously documented for these fields was `string`, which never matched the wire value — the runtime value was always a JSON number). This is a no-op at runtime; only the static type is corrected.
 - README, examples README, Cargo manifest, and lockfile now target `v1.1.0`.
 
+### Fixed
+
+- `PriceOracleMetadata.logo` is now `Option<String>` (with `#[serde(default)]`). Some markets omit this cosmetic field, and the previously-required typing failed deserialization of the entire `Market` in `markets.get_market()` / `get_active_markets()`. Brings Rust in line with the Go/TS SDKs, which already tolerated it.
+- `OrderBook.last_trade_price` is now `Option<f64>` (with `#[serde(default)]`). The API returns `lastTradePrice: null` for markets with no trades yet, which previously failed deserialization of the whole book in `markets.get_order_book()`. Verified against the API source that only `lastTradePrice` is nullable — the other orderbook fields remain required.
+
 ## [1.0.13]
 
 ### Added
