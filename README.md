@@ -203,6 +203,46 @@ let order = order_client
 
 `recv_window` must be between `1` and `10000` milliseconds. When `recv_window` is supplied without `timestamp`, the SDK stamps the current Unix time in milliseconds. Keep trading hosts NTP-synced; server clock skew tolerance is about one second. Do not retry a `425 Too Early` with the same payload; build a fresh order instead.
 
+### Cancel-Replace Orders
+
+Atomically cancel a resting order and submit its replacement in a single request via `POST /orders/cancel-replace`. Identify the order to cancel with `CancelTarget::OrderId` or `CancelTarget::ClientOrderId`, and set `mode` to `CancelReplaceMode::StopOnFailure` (skip the replacement if the cancel fails) or `CancelReplaceMode::AllowFailure`.
+
+```rust
+use limitless_exchange_rust_sdk::{
+    CancelReplaceMode, CancelReplaceParams, CancelTarget, GtcOrderArgs, OrderArgs,
+    OrderType, ReplacementOrderParams, Side,
+};
+
+let result = order_client
+    .cancel_replace(CancelReplaceParams {
+        cancel: CancelTarget::OrderId { order_id: "old-order-id".to_string() },
+        mode: CancelReplaceMode::StopOnFailure,
+        on_behalf_of: None,
+        replacement: ReplacementOrderParams {
+            order_type: OrderType::Gtc,
+            market_slug: market.slug.clone(),
+            args: OrderArgs::from(GtcOrderArgs {
+                token_id: market.outcomes[0].token_id.clone(),
+                side: Side::Buy,
+                price: 0.5,
+                size: 2.0,
+                expiration: None,
+                nonce: None,
+                taker: None,
+                post_only: false,
+            }),
+            client_order_id: None,
+            timestamp: None,
+            recv_window: None,
+            stp_policy: None,
+        },
+    })
+    .await?;
+// result.cancel and result.replacement each carry a per-leg status.
+```
+
+Replace many orders at once with `order_client.cancel_replace_batch(vec![...])`; the response `results` are index-aligned to the input. Each method has a `*_with_raw` sibling returning `SdkResponse<T>`, and partner integrations use the delegated `cancel_replace` / `cancel_replace_batch` (which set `on_behalf_of`). The single-order variant allows a `409` conflict through as a decodable result.
+
 ## Workflow Guide
 
 - Public market discovery: [examples/active_markets.rs](examples/active_markets.rs)
@@ -355,3 +395,89 @@ println!(
     child_withdraw.envelope.transaction_id, own_wallet_withdraw.envelope.transaction_id
 );
 ```
+
+### Partner AMM Trading
+
+`sdk.amm` submits AMM market approvals and exact-collateral buy/sell orders for partner server wallets.
+
+- `check_allowance` / `approve_allowance` call `POST /amm/allowances/{check,approve}`
+- `buy` calls `POST /amm/buy`, `sell` calls `POST /amm/sell`
+- `ensure_allowance` runs check → approve-once → poll `check` until confirmed (default 2s interval, 30 attempts, configurable via `AmmAllowancePollOptions`)
+- all four endpoints require HMAC-scoped API-token auth (a token holding **both** `trading` and `delegated_signing` scopes) or an explicit Privy identity token via the `*_with_identity` methods; **legacy API keys are rejected**
+- `outcome_index` is `0` (YES) or `1` (NO); collateral amounts are positive integer **strings** in the collateral token's base units (never floats)
+- `idempotency_key` is required per trade and retained by the API for 24 hours; retry timed-out trades with the **exact same params** so the serialized body stays byte-identical
+- buy/sell never check or submit allowances themselves — confirm the allowance first
+- set `on_behalf_of` to a sub-account profile id (`1..=2147483647`); omit it (`None`) for the authenticated profile
+
+```rust
+use limitless_exchange_rust_sdk::{
+    AmmAllowanceParams, AmmAllowanceSide, AmmBuyParams, Client, HmacCredentials,
+};
+
+let sdk = Client::from_http_client(
+    Client::builder()
+        .hmac_credentials(HmacCredentials {
+            token_id: std::env::var("LIMITLESS_API_TOKEN_ID")?,
+            secret: std::env::var("LIMITLESS_API_TOKEN_SECRET")?,
+        })
+        .build()?,
+)?;
+
+// 1. Confirm the BUY allowance (check -> approve-once -> poll check).
+let allowance = sdk
+    .amm
+    .ensure_allowance(
+        &AmmAllowanceParams {
+            market: "btc-above-100k".to_string(),
+            side: AmmAllowanceSide::Buy,
+            on_behalf_of: None,
+        },
+        None,
+    )
+    .await?;
+
+// 2. Submit an exact-collateral buy (no allowance preflight inside buy).
+if allowance.confirmed {
+    let buy = sdk
+        .amm
+        .buy(&AmmBuyParams {
+            market: "btc-above-100k".to_string(),
+            outcome_index: 0,
+            collateral_amount: "1000000".to_string(),
+            slippage_bps: Some(100),
+            idempotency_key: "unique-key-per-trade".to_string(),
+            on_behalf_of: None,
+        })
+        .await?;
+    println!("buy status={:?} minShares={}", buy.status, buy.min_shares);
+}
+```
+
+### Raw HTTP Responses
+
+Every API-backed service method has a `*_with_raw` sibling that returns `SdkResponse<T>` instead of just `T`:
+
+```rust
+pub struct SdkResponse<T> {
+    pub data: T,          // identical to what the base method returns
+    pub raw: RawResponse, // { status: u16, headers: HeaderMap, body: Vec<u8> }
+}
+```
+
+Use the raw variant when you need the HTTP status code, response headers, or the exact response bytes; the base methods are unchanged and still return `T`. Rust cannot overload on return type, so raw mode is an explicit method rather than a flag.
+
+```rust
+// Base method — decoded value only.
+let markets = sdk.markets.get_active_markets(None).await?;
+
+// Raw sibling — decoded value plus the underlying HTTP response.
+let response = sdk.markets.get_active_markets_with_raw(None).await?;
+println!("HTTP {}", response.raw.status);
+println!("{} markets", response.data.data.len());
+
+// Available across services, including trades:
+let buy = sdk.amm.buy_with_raw(&buy_params).await?;
+println!("HTTP {} — {:?}", buy.raw.status, buy.data.status);
+```
+
+Raw mode still returns typed errors (`LimitlessError::Api`, carrying the numeric `status`) for HTTP status codes ≥ 400.

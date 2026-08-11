@@ -6,7 +6,8 @@ use url::form_urlencoded::Serializer;
 
 use crate::{
     errors::{LimitlessError, Result},
-    http_client::HttpClient,
+    http_client::{HttpClient, RequestOptions},
+    raw_response::SdkResponse,
 };
 
 const PARTNER_ACCOUNT_DISPLAY_NAME_MAX_LENGTH: usize = 44;
@@ -31,6 +32,14 @@ impl PartnerAccountService {
         input: &CreatePartnerAccountInput,
         eoa_headers: Option<&CreatePartnerAccountEoaHeaders>,
     ) -> Result<PartnerAccountResponse> {
+        Ok(self.create_account_with_raw(input, eoa_headers).await?.data)
+    }
+
+    pub async fn create_account_with_raw(
+        &self,
+        input: &CreatePartnerAccountInput,
+        eoa_headers: Option<&CreatePartnerAccountEoaHeaders>,
+    ) -> Result<SdkResponse<PartnerAccountResponse>> {
         self.client.require_auth("create_partner_account")?;
 
         let server_wallet_mode = input.create_server_wallet.unwrap_or(false);
@@ -57,9 +66,17 @@ impl PartnerAccountService {
             headers.insert("x-signature".to_string(), eoa_headers.signature.clone());
         }
 
-        self.client
-            .post_with_headers("/profiles/partner-accounts", input, headers)
-            .await
+        let raw = self
+            .client
+            .post_raw_with_headers(
+                "/profiles/partner-accounts",
+                input,
+                headers,
+                RequestOptions::default(),
+            )
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     /// Lists partner-owned accounts, or recovers a specific account by address when
@@ -68,12 +85,19 @@ impl PartnerAccountService {
         &self,
         params: &ListPartnerAccountsParams,
     ) -> Result<ListPartnerAccountsResponse> {
+        Ok(self.list_accounts_with_raw(params).await?.data)
+    }
+
+    pub async fn list_accounts_with_raw(
+        &self,
+        params: &ListPartnerAccountsParams,
+    ) -> Result<SdkResponse<ListPartnerAccountsResponse>> {
         self.require_hmac_auth(
             "list_partner_accounts",
             PARTNER_ACCOUNT_LIST_HMAC_ONLY_ERROR,
         )?;
         let path = partner_accounts_path(params)?;
-        self.client.get(&path).await
+        self.get_with_raw(&path).await
     }
 
     /// Checks delegated-trading allowance readiness from live chain state for a partner-created
@@ -82,9 +106,16 @@ impl PartnerAccountService {
         &self,
         profile_id: i32,
     ) -> Result<PartnerAccountAllowanceResponse> {
+        Ok(self.check_allowances_with_raw(profile_id).await?.data)
+    }
+
+    pub async fn check_allowances_with_raw(
+        &self,
+        profile_id: i32,
+    ) -> Result<SdkResponse<PartnerAccountAllowanceResponse>> {
         self.require_allowance_hmac_auth("check_partner_account_allowances")?;
         let path = partner_account_allowances_path(profile_id)?;
-        self.client.get(&path).await
+        self.get_with_raw(&path).await
     }
 
     /// Re-checks live chain state and retries delegated-trading allowances that are still missing
@@ -97,9 +128,25 @@ impl PartnerAccountService {
         &self,
         profile_id: i32,
     ) -> Result<PartnerAccountAllowanceResponse> {
+        Ok(self.retry_allowances_with_raw(profile_id).await?.data)
+    }
+
+    pub async fn retry_allowances_with_raw(
+        &self,
+        profile_id: i32,
+    ) -> Result<SdkResponse<PartnerAccountAllowanceResponse>> {
         self.require_allowance_hmac_auth("retry_partner_account_allowances")?;
         let path = partner_account_allowances_path(profile_id)?;
-        self.client.post(&format!("{path}/retry"), &json!({})).await
+        let raw = self
+            .client
+            .post_raw(
+                &format!("{path}/retry"),
+                &json!({}),
+                RequestOptions::default(),
+            )
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     /// Adds an active partner withdrawal destination allowlist entry using a Privy identity token.
@@ -109,6 +156,17 @@ impl PartnerAccountService {
         identity_token: &str,
         input: &PartnerWithdrawalAddressInput,
     ) -> Result<PartnerWithdrawalAddressResponse> {
+        Ok(self
+            .add_withdrawal_address_with_raw(identity_token, input)
+            .await?
+            .data)
+    }
+
+    pub async fn add_withdrawal_address_with_raw(
+        &self,
+        identity_token: &str,
+        input: &PartnerWithdrawalAddressInput,
+    ) -> Result<SdkResponse<PartnerWithdrawalAddressResponse>> {
         if identity_token.trim().is_empty() {
             return Err(LimitlessError::invalid_input(
                 "identity token is required for add_withdrawal_address",
@@ -120,9 +178,17 @@ impl PartnerAccountService {
             ));
         }
 
-        self.client
-            .post_with_identity("/portfolio/withdrawal-addresses", identity_token, input)
-            .await
+        let raw = self
+            .client
+            .post_raw_with_identity(
+                "/portfolio/withdrawal-addresses",
+                identity_token,
+                input,
+                RequestOptions::default(),
+            )
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     /// Removes a partner withdrawal destination allowlist entry using a Privy identity token.
@@ -132,6 +198,16 @@ impl PartnerAccountService {
         identity_token: &str,
         address: &str,
     ) -> Result<()> {
+        self.delete_withdrawal_address_with_raw(identity_token, address)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_withdrawal_address_with_raw(
+        &self,
+        identity_token: &str,
+        address: &str,
+    ) -> Result<SdkResponse<()>> {
         if identity_token.trim().is_empty() {
             return Err(LimitlessError::invalid_input(
                 "identity token is required for delete_withdrawal_address",
@@ -143,15 +219,27 @@ impl PartnerAccountService {
             ));
         }
 
-        self.client
-            .delete_with_identity(
+        let raw = self
+            .client
+            .delete_raw_with_identity(
                 &format!(
                     "/portfolio/withdrawal-addresses/{}",
                     urlencoding::encode(address)
                 ),
                 identity_token,
+                RequestOptions::default(),
             )
-            .await
+            .await?;
+        Ok(SdkResponse { data: (), raw })
+    }
+
+    async fn get_with_raw<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<SdkResponse<T>> {
+        let raw = self.client.get_raw(path, RequestOptions::default()).await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     fn require_allowance_hmac_auth(&self, operation: &str) -> Result<()> {

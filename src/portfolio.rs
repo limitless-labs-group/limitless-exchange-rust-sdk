@@ -2,7 +2,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::form_urlencoded::Serializer;
 
-use crate::{errors::Result, http_client::HttpClient};
+use crate::{
+    errors::Result,
+    http_client::{HttpClient, RequestOptions},
+    raw_response::SdkResponse,
+};
 
 #[derive(Clone)]
 pub struct PortfolioFetcher {
@@ -15,26 +19,46 @@ impl PortfolioFetcher {
     }
 
     pub async fn get_profile(&self, address: &str) -> Result<UserProfile> {
+        Ok(self.get_profile_with_raw(address).await?.data)
+    }
+
+    pub async fn get_profile_with_raw(&self, address: &str) -> Result<SdkResponse<UserProfile>> {
         self.client.require_auth("get_profile")?;
-        self.client.get(&profile_path(address)).await
+        self.get_json_with_raw(&profile_path(address)).await
     }
 
     pub async fn get_current_profile(&self) -> Result<UserProfile> {
+        Ok(self.get_current_profile_with_raw().await?.data)
+    }
+
+    pub async fn get_current_profile_with_raw(&self) -> Result<SdkResponse<UserProfile>> {
         self.client.require_auth("get_current_profile")?;
-        self.client.get(current_profile_path()).await
+        self.get_json_with_raw(current_profile_path()).await
     }
 
     pub async fn get_positions(&self) -> Result<PortfolioPositionsResponse> {
+        Ok(self.get_positions_with_raw().await?.data)
+    }
+
+    pub async fn get_positions_with_raw(&self) -> Result<SdkResponse<PortfolioPositionsResponse>> {
         self.client.require_auth("get_positions")?;
-        self.client.get("/portfolio/positions").await
+        self.get_json_with_raw("/portfolio/positions").await
     }
 
     pub async fn get_clob_positions(&self) -> Result<Vec<CLOBPosition>> {
-        Ok(self.get_positions().await?.clob)
+        Ok(self.get_clob_positions_with_raw().await?.data)
+    }
+
+    pub async fn get_clob_positions_with_raw(&self) -> Result<SdkResponse<Vec<CLOBPosition>>> {
+        Ok(self.get_positions_with_raw().await?.map(|value| value.clob))
     }
 
     pub async fn get_amm_positions(&self) -> Result<Vec<AMMPosition>> {
-        Ok(self.get_positions().await?.amm)
+        Ok(self.get_amm_positions_with_raw().await?.data)
+    }
+
+    pub async fn get_amm_positions_with_raw(&self) -> Result<SdkResponse<Vec<AMMPosition>>> {
+        Ok(self.get_positions_with_raw().await?.map(|value| value.amm))
     }
 
     /// Fetch user history with cursor-based pagination.
@@ -47,9 +71,25 @@ impl PortfolioFetcher {
         cursor: Option<&str>,
         limit: Option<u32>,
     ) -> Result<HistoryResponse> {
+        Ok(self.get_user_history_with_raw(cursor, limit).await?.data)
+    }
+
+    pub async fn get_user_history_with_raw(
+        &self,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<SdkResponse<HistoryResponse>> {
         self.client.require_auth("get_user_history")?;
-        let url = history_path(cursor, limit);
-        self.client.get(&url).await
+        self.get_json_with_raw(&history_path(cursor, limit)).await
+    }
+
+    async fn get_json_with_raw<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<SdkResponse<T>> {
+        let raw = self.client.get_raw(path, RequestOptions::default()).await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 }
 

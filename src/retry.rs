@@ -134,6 +134,46 @@ impl RetryableClient {
         .await
     }
 
+    pub async fn post_raw<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        let client = self.client.clone();
+        self.run(move || {
+            let client = client.clone();
+            let options = options.clone();
+            async move { client.post_raw(path, body, options).await }
+        })
+        .await
+    }
+
+    pub async fn patch_raw<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        let client = self.client.clone();
+        self.run(move || {
+            let client = client.clone();
+            let options = options.clone();
+            async move { client.patch_raw(path, body, options).await }
+        })
+        .await
+    }
+
+    pub async fn delete_raw(&self, path: &str, options: RequestOptions) -> Result<RawResponse> {
+        let client = self.client.clone();
+        self.run(move || {
+            let client = client.clone();
+            let options = options.clone();
+            async move { client.delete_raw(path, options).await }
+        })
+        .await
+    }
+
     pub async fn patch<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
         path: &str,

@@ -6,6 +6,19 @@ All notable changes to the Limitless Exchange Rust SDK will be documented in thi
 
 ### Added
 
+- Partner AMM trading via the new `AmmService` (exposed as `Client::amm`):
+  - `check_allowance` / `approve_allowance` (`POST /amm/allowances/{check,approve}`), `buy` (`POST /amm/buy`), `sell` (`POST /amm/sell`), and the `ensure_allowance` helper (check → approve-once → poll `check` with a 2s default interval and 30-attempt default, configurable via `AmmAllowancePollOptions`).
+  - HMAC-scoped API-token auth (token must hold both `trading` and `delegated_signing` scopes) or explicit Privy identity auth via `*_with_identity` variants; legacy API keys are rejected before any network call (`AMM_HMAC_ONLY_ERROR`).
+  - Typed requests/responses with camelCase wire mapping: `AmmAllowanceParams`, `AmmBuyParams`, `AmmSellParams`, `AmmAllowanceResponse`, `AmmBuyResponse`, `AmmSellResponse`, `AmmTransactionIdentifiers` (flattened, independently-optional `transactionId`/`userOperationHash`/`txHash`), and the `AmmAllowanceSide`, `AmmAllowanceStatus`, and `AmmTradeStatus` enums.
+  - SDK-side validation returning `LimitlessError::InvalidInput` before the network: non-empty market ≤255 chars, `outcome_index ∈ {0,1}`, positive-integer-string amounts (`^[1-9]\d*$`, ≤78 chars, ≤ uint256 max), `slippage_bps` 0..1000, non-blank `idempotency_key` ≤128 chars, and `on_behalf_of` in `1..=2147483647` (omitted from the wire when `None`).
+  - AMM error mapping stays on the existing `LimitlessError::Api(ApiError)` model — match on the numeric `.status` (403/409/422/425/429/502/503) and read `.data`; no new error enum variants were added.
+  - Added the runnable `amm_trading` example.
+- Opt-in raw HTTP responses across all API-backed service methods. Each `foo(...) -> Result<T>` now has a sibling `foo_with_raw(...) -> Result<SdkResponse<T>>` exposing the underlying `RawResponse` (`status`, `headers`, `body`) alongside the decoded value; the base methods delegate to the raw variants and are behavior-preserving.
+  - New generic wrapper `SdkResponse<T> { data: T, raw: RawResponse }` (re-exported from the crate root).
+  - New transport primitives `HttpClient::{post_raw, patch_raw, delete_raw, post_raw_with_identity, post_raw_with_headers, get_raw_with_identity, delete_raw_with_identity}` with matching `RetryableClient::{post_raw, patch_raw, delete_raw}` pass-throughs.
+  - Coverage spans `markets`, `market_pages`, `portfolio`, `api_tokens`, `partner_accounts`, `delegated_orders`, `server_wallets`, `orders`, and the new `amm` service.
+  - Added the runnable `raw_response` example.
+- Atomic cancel-replace for orders via `OrderClient::cancel_replace` / `cancel_replace_batch` (with `cancel_replace_with_raw` / `cancel_replace_batch_with_raw` siblings) and the delegated `cancel_replace` / `cancel_replace_batch` (plus `_with_raw`), backed by `POST /orders/cancel-replace` and `/orders/cancel-replace/batch`. A single request cancels a resting order and submits its replacement atomically; the batch variant does so for many operations at once. Typed `CancelReplaceParams`, `CancelReplaceResult`, and `CancelReplaceBatchResponse`.
 - Typed `orderEvent` payloads via `WebSocketClient::on_order_event_typed`, deserializing the socket.io `orderEvent` frame into an `OrderEvent` enum tagged on `type`:
   - `OrderEvent::Matched(MatchedOrderEvent)` — pre-settlement per-fill estimate (`source: "SETTLEMENT"`, `type: "MATCHED"`); monetary fields are JSON strings, `configuredFeeRateBps`/`effectiveFeeBps` are JSON numbers (maker side reports `0`), with `token` (`YES`/`NO`) and `isEstimate`.
   - `OrderEvent::Execution(ExecutionOrderEvent)` — FAK/FOK terminal outcome (`source: "OME"`, `type: "EXECUTION"`); `status` is `FILLED`/`PARTIALLY_FILLED`/`KILLED`, `eventId` is the string `"terminal:<orderId>"`.
@@ -18,6 +31,11 @@ All notable changes to the Limitless Exchange Rust SDK will be documented in thi
 
 - `ExecutionOrderEvent::price` and `ExecutionOrderEvent::remaining_size` use `FlexFloat` to accept the JSON numbers OME emits (the static type previously documented for these fields was `string`, which never matched the wire value — the runtime value was always a JSON number). This is a no-op at runtime; only the static type is corrected.
 - README, examples README, Cargo manifest, and lockfile now target `v1.1.0`.
+
+### Fixed
+
+- `PriceOracleMetadata.logo` is now `Option<String>` (with `#[serde(default)]`). Some markets omit this cosmetic field, and the previously-required typing failed deserialization of the entire `Market` in `markets.get_market()` / `get_active_markets()`. Brings Rust in line with the Go/TS SDKs, which already tolerated it.
+- `OrderBook.last_trade_price` is now `Option<f64>` (with `#[serde(default)]`). The API returns `lastTradePrice: null` for markets with no trades yet, which previously failed deserialization of the whole book in `markets.get_order_book()`. Verified against the API source that only `lastTradePrice` is nullable — the other orderbook fields remain required.
 
 ## [1.0.13]
 

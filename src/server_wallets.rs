@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::{LimitlessError, Result},
-    http_client::HttpClient,
+    http_client::{HttpClient, RequestOptions},
+    raw_response::SdkResponse,
 };
 
 static CONDITION_ID_REGEX: Lazy<Regex> =
@@ -31,16 +32,35 @@ impl ServerWalletService {
         &self,
         params: &RedeemServerWalletParams,
     ) -> Result<RedeemServerWalletResponse> {
+        Ok(self.redeem_positions_with_raw(params).await?.data)
+    }
+
+    pub async fn redeem_positions_with_raw(
+        &self,
+        params: &RedeemServerWalletParams,
+    ) -> Result<SdkResponse<RedeemServerWalletResponse>> {
         self.require_hmac_auth("redeem_server_wallet_positions")?;
         validate_condition_id(&params.condition_id)?;
         validate_on_behalf_of(params.on_behalf_of)?;
-        self.client.post("/portfolio/redeem", params).await
+        let raw = self
+            .client
+            .post_raw("/portfolio/redeem", params, RequestOptions::default())
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     pub async fn withdraw(
         &self,
         params: &WithdrawServerWalletParams,
     ) -> Result<WithdrawServerWalletResponse> {
+        Ok(self.withdraw_with_raw(params).await?.data)
+    }
+
+    pub async fn withdraw_with_raw(
+        &self,
+        params: &WithdrawServerWalletParams,
+    ) -> Result<SdkResponse<WithdrawServerWalletResponse>> {
         self.require_hmac_auth("withdraw_server_wallet_funds")?;
         validate_amount(&params.amount)?;
 
@@ -60,7 +80,12 @@ impl ServerWalletService {
             ));
         }
 
-        self.client.post("/portfolio/withdraw", params).await
+        let raw = self
+            .client
+            .post_raw("/portfolio/withdraw", params, RequestOptions::default())
+            .await?;
+        let data = raw.json()?;
+        Ok(SdkResponse { data, raw })
     }
 
     fn require_hmac_auth(&self, operation: &str) -> Result<()> {

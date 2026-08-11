@@ -1,4 +1,5 @@
 use crate::{
+    amm::AmmService,
     api_tokens::ApiTokenService,
     delegated_orders::DelegatedOrderService,
     errors::Result,
@@ -21,6 +22,7 @@ pub struct Client {
     pub partner_accounts: PartnerAccountService,
     pub delegated_orders: DelegatedOrderService,
     pub server_wallets: ServerWalletService,
+    pub amm: AmmService,
 }
 
 impl Client {
@@ -41,6 +43,7 @@ impl Client {
             partner_accounts: PartnerAccountService::new(http.clone()),
             delegated_orders: DelegatedOrderService::new(http.clone(), Some(http.logger())),
             server_wallets: ServerWalletService::new(http.clone()),
+            amm: AmmService::new(http.clone()),
             http,
         })
     }
