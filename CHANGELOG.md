@@ -2,6 +2,12 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `version` on `OrderbookUpdate` and `midpoint` on `OrderbookData`, matching the `orderbookUpdate` wire frame. `version` is the publisher sequence for the book (`0` when the initial snapshot came from the database fallback); use it to drop an out-of-order frame right after subscribing. `midpoint` is the midpoint of the best displayed bid and ask without the `minSize` filter that `adjusted_midpoint` applies. Both use `#[serde(default)]`, so frames that omit them still parse.
+
 ## [1.1.0]
 
 ### Added

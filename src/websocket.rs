@@ -192,6 +192,10 @@ pub struct OrderbookData {
     pub token_id: String,
     #[serde(rename = "adjustedMidpoint")]
     pub adjusted_midpoint: f64,
+    /// Midpoint of the best displayed bid and ask, without the `minSize` filter
+    /// that `adjusted_midpoint` applies. Defaults to `0.0` if the frame omits it.
+    #[serde(default)]
+    pub midpoint: f64,
     #[serde(rename = "maxSpread")]
     pub max_spread: FlexFloat,
     #[serde(rename = "minSize")]
@@ -203,6 +207,12 @@ pub struct OrderbookUpdate {
     #[serde(rename = "marketSlug")]
     pub market_slug: String,
     pub orderbook: OrderbookData,
+    /// Publisher sequence for this market's book. Increases with every frame while
+    /// the same publisher is active and can restart after a backend failover. The
+    /// initial snapshot sent after subscribing carries `0` when it came from the
+    /// database fallback. Defaults to `0` if the frame omits it.
+    #[serde(default)]
+    pub version: u64,
     pub timestamp: Value,
 }
 
@@ -1787,9 +1797,11 @@ Sec-WebSocket-Accept: {accept}\r\n\r\n"
                     "asks":[{"price":0.52,"size":120.0,"side":"sell"}],
                     "tokenId":"123",
                     "adjustedMidpoint":0.515,
+                    "midpoint":0.51,
                     "maxSpread":"0.05",
                     "minSize":"100000000"
                 },
+                "version":48213,
                 "timestamp":"2026-03-17T00:00:00.000Z"
             }"#,
         )
@@ -1797,6 +1809,30 @@ Sec-WebSocket-Accept: {accept}\r\n\r\n"
 
         assert_eq!(parsed.orderbook.max_spread.float64(), 0.05);
         assert_eq!(parsed.orderbook.min_size.float64(), 100_000_000.0);
+        assert_eq!(parsed.orderbook.midpoint, 0.51);
+        assert_eq!(parsed.version, 48213);
+    }
+
+    #[test]
+    fn orderbook_update_defaults_version_and_midpoint_when_absent() {
+        let parsed: OrderbookUpdate = serde_json::from_str(
+            r#"{
+                "marketSlug":"btc",
+                "orderbook":{
+                    "bids":[],
+                    "asks":[],
+                    "tokenId":"123",
+                    "adjustedMidpoint":0.5,
+                    "maxSpread":0.05,
+                    "minSize":1
+                },
+                "timestamp":"2026-03-17T00:00:00.000Z"
+            }"#,
+        )
+        .expect("payload without version/midpoint should parse");
+
+        assert_eq!(parsed.version, 0);
+        assert_eq!(parsed.orderbook.midpoint, 0.0);
     }
 
     #[test]
