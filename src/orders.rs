@@ -933,40 +933,59 @@ impl OrderClient {
             .resolve_signing_config_for_market(&params.market_slug)
             .await?;
 
-        let unsigned_order = self.build_unsigned_order(params.args.clone()).await?;
-        let signature = self.signer.sign_order(&unsigned_order, &signing_config)?;
+        let mut fee_rate_bps = user_data.fee_rate_bps;
+        for attempt in 0..2 {
+            let builder = OrderBuilder::new(self.signer.address(), fee_rate_bps, None);
+            let unsigned_order = builder.build_order(&params.args)?;
+            let signature = self.signer.sign_order(&unsigned_order, &signing_config)?;
 
-        let payload = NewOrderPayload {
-            order: SignedOrder {
-                salt: unsigned_order.salt,
-                maker: unsigned_order.maker,
-                signer: unsigned_order.signer,
-                taker: unsigned_order.taker,
-                token_id: unsigned_order.token_id,
-                maker_amount: unsigned_order.maker_amount,
-                taker_amount: unsigned_order.taker_amount,
-                expiration: unsigned_order.expiration,
-                nonce: unsigned_order.nonce,
-                fee_rate_bps: unsigned_order.fee_rate_bps,
-                side: unsigned_order.side,
-                signature_type: unsigned_order.signature_type,
-                price: unsigned_order.price,
-                signature,
-            },
-            order_type: params.order_type,
-            market_slug: params.market_slug,
-            owner_id: user_data.user_id,
-            post_only: post_only_from_args(&params.args),
-            timestamp: receive_window.timestamp,
-            recv_window: receive_window.recv_window,
-        };
+            let payload = NewOrderPayload {
+                order: SignedOrder {
+                    salt: unsigned_order.salt,
+                    maker: unsigned_order.maker,
+                    signer: unsigned_order.signer,
+                    taker: unsigned_order.taker,
+                    token_id: unsigned_order.token_id,
+                    maker_amount: unsigned_order.maker_amount,
+                    taker_amount: unsigned_order.taker_amount,
+                    expiration: unsigned_order.expiration,
+                    nonce: unsigned_order.nonce,
+                    fee_rate_bps: unsigned_order.fee_rate_bps,
+                    side: unsigned_order.side,
+                    signature_type: unsigned_order.signature_type,
+                    price: unsigned_order.price,
+                    signature,
+                },
+                order_type: params.order_type,
+                market_slug: params.market_slug.clone(),
+                owner_id: user_data.user_id,
+                post_only: post_only_from_args(&params.args),
+                timestamp: receive_window.timestamp,
+                recv_window: receive_window.recv_window,
+            };
 
-        let raw = self
-            .client
-            .post_raw("/orders", &payload, RequestOptions::default())
-            .await?;
-        let data = raw.json()?;
-        Ok(SdkResponse { data, raw })
+            match self
+                .client
+                .post_raw("/orders", &payload, RequestOptions::default())
+                .await
+            {
+                Ok(raw) => {
+                    let data = raw.json()?;
+                    return Ok(SdkResponse { data, raw });
+                }
+                Err(error) => {
+                    if attempt != 0 {
+                        return Err(error);
+                    }
+                    let Some(expected_fee_rate_bps) = fee_rate_mismatch_expected_fee(&error) else {
+                        return Err(error);
+                    };
+                    fee_rate_bps = expected_fee_rate_bps;
+                }
+            }
+        }
+
+        unreachable!("create order attempts are bounded")
     }
 
     pub async fn cancel(&self, order_id: &str) -> Result<String> {
@@ -1175,11 +1194,13 @@ impl OrderClient {
             .info("Fetching user profile for order client initialization");
 
         let profile: UserProfile = self.portfolio_fetcher.get_current_profile().await?;
-        let fee_rate_bps = profile
-            .rank
-            .as_ref()
-            .map(|rank| rank.fee_rate_bps)
-            .unwrap_or(DEFAULT_FEE_RATE_BPS);
+        let fee_rate_bps = profile.effective_fee_rate_bps.unwrap_or_else(|| {
+            profile
+                .rank
+                .as_ref()
+                .map(|rank| rank.fee_rate_bps)
+                .unwrap_or(DEFAULT_FEE_RATE_BPS)
+        });
         let user_data = UserData {
             user_id: profile.id,
             fee_rate_bps,
@@ -1230,6 +1251,16 @@ impl OrderClient {
             "market {market_slug} does not expose venue.exchange and no fallback signing contract is configured"
         )))
     }
+}
+
+fn fee_rate_mismatch_expected_fee(error: &LimitlessError) -> Option<i32> {
+    let LimitlessError::Api(error) = error else {
+        return None;
+    };
+    if error.status != 400 || error.data.get("code")?.as_str()? != "FEE_RATE_MISMATCH" {
+        return None;
+    }
+    i32::try_from(error.data.get("expectedFeeRateBps")?.as_i64()?).ok()
 }
 
 pub(crate) fn normalize_receive_window_options(
@@ -1967,7 +1998,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+    };
+
     use super::*;
+    use crate::errors::ApiError;
     use serde_json::json;
 
     const TEST_PRIVATE_KEY_HEX: &str =
@@ -2029,6 +2068,299 @@ mod tests {
                 post_only: false,
             }),
         }
+    }
+
+    fn spawn_order_server(
+        expected_requests: usize,
+        fee_mismatch_responses: usize,
+    ) -> (String, mpsc::Receiver<Vec<serde_json::Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut order_requests = Vec::new();
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("connection");
+                let request = read_http_request(&mut stream);
+                let header_end = request.find("\r\n\r\n").expect("request headers");
+                let request_line = request.lines().next().expect("request line");
+                let path = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("request path");
+                let request_body = &request[header_end + 4..];
+
+                let (status, body) = match path {
+                    "/profiles/me" => (
+                        200,
+                        json!({
+                            "id": 42,
+                            "account": TEST_SIGNER_ADDRESS,
+                            "effectiveFeeRateBps": 300,
+                            "rank": {"id": 1, "name": "Gold", "feeRateBps": 450}
+                        }),
+                    ),
+                    path if path.starts_with("/markets/") => (
+                        200,
+                        test_market_response(path.trim_start_matches("/markets/")),
+                    ),
+                    "/orders" => {
+                        let request: serde_json::Value =
+                            serde_json::from_str(request_body).expect("order request JSON");
+                        order_requests.push(request.clone());
+                        if order_requests.len() <= fee_mismatch_responses {
+                            (
+                                400,
+                                json!({
+                                    "code": "FEE_RATE_MISMATCH",
+                                    "expectedFeeRateBps": 0
+                                }),
+                            )
+                        } else {
+                            (200, created_order_response(&request, order_requests.len()))
+                        }
+                    }
+                    "/orders/cancel-replace" => {
+                        let request: serde_json::Value = serde_json::from_str(request_body)
+                            .expect("cancel-replace request JSON");
+                        order_requests.push(request);
+                        (
+                            200,
+                            json!({
+                                "cancel": {
+                                    "status": "FAILURE",
+                                    "error": {"code": "NOT_FOUND", "message": "not found"}
+                                },
+                                "replacement": {"status": "NOT_ATTEMPTED"}
+                            }),
+                        )
+                    }
+                    other => panic!("unexpected request path: {other}"),
+                };
+                write_json_response(&mut stream, status, &body);
+            }
+            sender.send(order_requests).expect("request capture");
+        });
+        (format!("http://{address}"), receiver)
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).expect("request read");
+            bytes.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&bytes);
+            let Some(header_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = text[..header_end]
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+                .unwrap_or(0);
+            if bytes.len() >= header_end + 4 + content_length {
+                return String::from_utf8(bytes).expect("UTF-8 request");
+            }
+        }
+    }
+
+    fn write_json_response(
+        stream: &mut std::net::TcpStream,
+        status: u16,
+        body: &serde_json::Value,
+    ) {
+        let body = body.to_string();
+        let reason = if status == 200 { "OK" } else { "Bad Request" };
+        write!(
+            stream,
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("response write");
+    }
+
+    fn test_market_response(slug: &str) -> serde_json::Value {
+        json!({
+            "id": 7,
+            "slug": slug,
+            "title": slug,
+            "description": "",
+            "collateralToken": {"address": "0x1", "decimals": 6, "symbol": "USDC"},
+            "expirationDate": "2027-01-01T00:00:00.000Z",
+            "expirationTimestamp": 1798761600,
+            "createdAt": "2026-01-01T00:00:00.000Z",
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+            "categories": [],
+            "status": "FUNDED",
+            "creator": {"name": "Limitless"},
+            "tags": [],
+            "tradeType": "clob",
+            "marketType": "normal",
+            "priorityIndex": 0,
+            "metadata": {"fee": true},
+            "venue": {"exchange": "0xa4409D988CA2218d956BeEFD3874100F444f0DC3"}
+        })
+    }
+
+    fn created_order_response(request: &serde_json::Value, index: usize) -> serde_json::Value {
+        let order = &request["order"];
+        json!({
+            "order": {
+                "id": format!("order-{index}"),
+                "createdAt": "2026-03-17T00:00:00.000Z",
+                "makerAmount": order["makerAmount"],
+                "takerAmount": order["takerAmount"],
+                "expiration": order["expiration"],
+                "signatureType": order["signatureType"],
+                "salt": order["salt"],
+                "maker": order["maker"],
+                "signer": order["signer"],
+                "taker": order["taker"],
+                "tokenId": order["tokenId"],
+                "side": order["side"],
+                "feeRateBps": order["feeRateBps"],
+                "nonce": order["nonce"],
+                "signature": order["signature"],
+                "orderType": request["orderType"],
+                "price": order["price"],
+                "marketId": 7
+            },
+            "makerMatches": []
+        })
+    }
+
+    fn test_order_client(base_url: String) -> OrderClient {
+        let client = HttpClient::builder()
+            .base_url(base_url)
+            .api_key("test-api-key")
+            .build()
+            .expect("client");
+        OrderClient::new(client, TEST_PRIVATE_KEY_HEX, None).expect("order client")
+    }
+
+    #[tokio::test]
+    async fn fee_mismatch_retry_is_request_local_across_markets() {
+        let (base_url, requests) = spawn_order_server(7, 1);
+        let client = test_order_client(base_url);
+
+        let mut params = test_create_order_params();
+        params.market_slug = "fee-disabled".to_string();
+        client
+            .create_order(params.clone())
+            .await
+            .expect("fee-disabled create should retry successfully");
+        params.market_slug = "fee-enabled".to_string();
+        client
+            .create_order(params.clone())
+            .await
+            .expect("fee-enabled create should use profile fee");
+        client
+            .cancel_replace(CancelReplaceParams {
+                cancel: CancelTarget::OrderId {
+                    order_id: "old-order".to_string(),
+                },
+                replacement: ReplacementOrderParams {
+                    order_type: params.order_type,
+                    market_slug: params.market_slug,
+                    args: params.args,
+                    client_order_id: None,
+                    timestamp: None,
+                    recv_window: None,
+                    stp_policy: None,
+                },
+                mode: CancelReplaceMode::StopOnFailure,
+                on_behalf_of: None,
+            })
+            .await
+            .expect("cancel-replace response should decode");
+
+        let requests = requests.recv().expect("captured requests");
+        let fees: Vec<i64> = requests
+            .iter()
+            .map(|request| {
+                request
+                    .pointer("/order/feeRateBps")
+                    .or_else(|| request.pointer("/replacement/order/feeRateBps"))
+                    .and_then(serde_json::Value::as_i64)
+                    .expect("signed fee")
+            })
+            .collect();
+        assert_eq!(fees, vec![300, 0, 300, 300]);
+        assert_ne!(requests[0]["order"]["salt"], requests[1]["order"]["salt"]);
+
+        let state = client.state.lock().unwrap_or_else(|err| err.into_inner());
+        assert_eq!(
+            state.user_data.as_ref().map(|data| data.fee_rate_bps),
+            Some(300)
+        );
+        assert_eq!(
+            state.builder.as_ref().map(|builder| builder.fee_rate_bps),
+            Some(300)
+        );
+    }
+
+    #[tokio::test]
+    async fn fee_mismatch_retries_at_most_once() {
+        let (base_url, requests) = spawn_order_server(4, 2);
+        let client = test_order_client(base_url);
+
+        let error = client
+            .create_order(test_create_order_params())
+            .await
+            .expect_err("second mismatch must be returned");
+        assert!(matches!(
+            error,
+            LimitlessError::Api(ApiError { status: 400, .. })
+        ));
+        assert_eq!(requests.recv().expect("captured requests").len(), 2);
+    }
+
+    #[test]
+    fn fee_mismatch_retry_requires_exact_integer_pre_admission_error() {
+        let cases = [
+            (
+                json!({"code": "FEE_RATE_MISMATCH", "expectedFeeRateBps": 0}),
+                Some(0),
+            ),
+            (
+                json!({"code": "FEE_RATE_MISMATCH", "expectedFeeRateBps": 1.5}),
+                None,
+            ),
+            (
+                json!({"code": "FEE_RATE_MISMATCH", "expectedFeeRateBps": "0"}),
+                None,
+            ),
+            (json!({"code": "OTHER", "expectedFeeRateBps": 0}), None),
+        ];
+        for (data, expected) in cases {
+            let error = LimitlessError::Api(ApiError {
+                status: 400,
+                message: "validation failed".to_string(),
+                data,
+                url: "/orders".to_string(),
+                method: "POST".to_string(),
+            });
+            assert_eq!(fee_rate_mismatch_expected_fee(&error), expected);
+        }
+
+        let server_error = LimitlessError::Api(ApiError {
+            status: 500,
+            message: "server error".to_string(),
+            data: json!({"code": "FEE_RATE_MISMATCH", "expectedFeeRateBps": 0}),
+            url: "/orders".to_string(),
+            method: "POST".to_string(),
+        });
+        assert_eq!(fee_rate_mismatch_expected_fee(&server_error), None);
+        assert_eq!(
+            fee_rate_mismatch_expected_fee(&LimitlessError::invalid_input(
+                "network outcome unknown"
+            )),
+            None
+        );
     }
 
     #[test]
