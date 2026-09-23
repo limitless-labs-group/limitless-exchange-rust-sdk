@@ -136,6 +136,8 @@ pub struct UserProfile {
     pub account: String,
     #[serde(default)]
     pub rank: Option<UserRank>,
+    #[serde(rename = "effectiveFeeRateBps", default)]
+    pub effective_fee_rate_bps: Option<i32>,
     #[serde(rename = "createdAt", default)]
     pub created_at: Option<String>,
     #[serde(default)]
@@ -434,6 +436,20 @@ mod tests {
     use super::*;
     use crate::{errors::LimitlessError, http_client::HttpClient};
     use serde_json::json;
+
+    #[test]
+    fn user_profile_preserves_zero_effective_fee() {
+        let profile: UserProfile = serde_json::from_value(json!({
+            "id": 42,
+            "account": "0xabc",
+            "effectiveFeeRateBps": 0,
+            "rank": {"id": 1, "name": "Gold", "feeRateBps": 300}
+        }))
+        .expect("profile should deserialize");
+
+        assert_eq!(profile.effective_fee_rate_bps, Some(0));
+        assert_eq!(profile.rank.map(|rank| rank.fee_rate_bps), Some(300));
+    }
 
     #[test]
     fn profile_paths_match_api_routes() {
