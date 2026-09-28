@@ -359,10 +359,12 @@ pub struct MatchedOrderEvent {
 
 /// FAK/FOK terminal `EXECUTION` frame (`source: "OME"`).
 ///
-/// `price` and `remaining_size` arrive as JSON numbers from OME (the
-/// [`FlexFloat`] newtype also tolerates string encodings). `event_id` is the
-/// string form `"terminal:<orderId>"`. `status` is `FILLED`,
-/// `PARTIALLY_FILLED`, or `KILLED`.
+/// Unlike lifecycle frames, `price` and `remaining_size` arrive as JSON
+/// strings; the [`FlexFloat`] newtype decodes both encodings. `remaining_size`
+/// is in raw 6-decimal units (`"0"` on `FILLED`, the original size on
+/// `KILLED`), so divide by `1e6` for shares. `event_id` is the string form
+/// `"terminal:<orderId>"`. `status` is `FILLED`, `PARTIALLY_FILLED`, or
+/// `KILLED`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionOrderEvent {

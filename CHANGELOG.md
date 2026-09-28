@@ -2,6 +2,12 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- `ExecutionOrderEvent` documentation: `price` and `remaining_size` arrive as JSON strings on the terminal `EXECUTION` frame (lifecycle frames send numbers), and `remaining_size` is in raw 6-decimal units. Deserialization was already correct via `FlexFloat`; only the doc comment claimed numbers.
+
 ## [1.1.0]
 
 ### Added
