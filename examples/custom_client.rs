@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_active_markets(Some(&ActiveMarketsParams {
             limit: Some(5),
             page: None,
-            sort_by: Some(ActiveMarketsSortBy::Liquidity),
+            sort_by: Some(ActiveMarketsSortBy::Trending),
         }))
         .await?;
 

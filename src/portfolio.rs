@@ -313,10 +313,19 @@ pub struct PortfolioPositionsResponse {
     pub clob: Vec<CLOBPosition>,
     #[serde(default)]
     pub group: Vec<Value>,
-    #[serde(default)]
-    pub points: Option<String>,
-    #[serde(rename = "accumulativePoints", default)]
-    pub accumulative_points: Option<String>,
+    /// The server sends a decimal string once the profile has a points row and
+    /// the JSON number `0` before that, so both encodings are accepted.
+    #[serde(
+        default,
+        deserialize_with = "crate::orders::deserialize_option_f64_from_number_or_string"
+    )]
+    pub points: Option<f64>,
+    #[serde(
+        rename = "accumulativePoints",
+        default,
+        deserialize_with = "crate::orders::deserialize_option_f64_from_number_or_string"
+    )]
+    pub accumulative_points: Option<f64>,
     #[serde(default)]
     pub rewards: Option<PortfolioRewards>,
 }
@@ -455,6 +464,39 @@ mod tests {
             }
             other => panic!("expected authentication error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn positions_points_accept_number_and_string_encodings() {
+        // Fresh profile with no user_points row: the API falls back to the number 0.
+        let fresh: PortfolioPositionsResponse = serde_json::from_value(json!({
+            "amm": [],
+            "clob": [],
+            "group": [],
+            "points": 0,
+            "accumulativePoints": 0
+        }))
+        .expect("number-encoded points should decode");
+        assert_eq!(fresh.points, Some(0.0));
+        assert_eq!(fresh.accumulative_points, Some(0.0));
+
+        // Profile with a points row: decimal(…, 8) columns arrive as strings.
+        let seasoned: PortfolioPositionsResponse = serde_json::from_value(json!({
+            "amm": [],
+            "clob": [],
+            "group": [],
+            "points": "1234.56789012",
+            "accumulativePoints": "42.5"
+        }))
+        .expect("string-encoded points should decode");
+        assert_eq!(seasoned.points, Some(1234.56789012));
+        assert_eq!(seasoned.accumulative_points, Some(42.5));
+
+        let absent: PortfolioPositionsResponse =
+            serde_json::from_value(json!({ "amm": [], "clob": [], "group": [] }))
+                .expect("missing points should decode");
+        assert_eq!(absent.points, None);
+        assert_eq!(absent.accumulative_points, None);
     }
 
     #[test]

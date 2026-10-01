@@ -211,8 +211,9 @@ pub struct OrderbookUpdate {
 /// CLOB `orderbookUpdate` events use `OrderbookData` instead.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AmmPriceEntry {
-    #[serde(rename = "marketId")]
-    pub market_id: i32,
+    /// Absent on the initial snapshot for markets without a resolved id.
+    #[serde(rename = "marketId", default)]
+    pub market_id: Option<i32>,
     #[serde(rename = "marketAddress")]
     pub market_address: String,
     #[serde(rename = "yesPrice")]
@@ -221,15 +222,43 @@ pub struct AmmPriceEntry {
     pub no_price: f64,
 }
 
+/// `newPriceData` frame.
+///
+/// The server sends two shapes: the initial per-market snapshot right after
+/// `subscribe_market_prices` carries a top-level `marketAddress` and a single
+/// `updatedPrices` object, while streamed updates omit `marketAddress` and
+/// carry an `updatedPrices` array. Both decode into this struct.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NewPriceData {
-    #[serde(rename = "marketAddress")]
-    pub market_address: String,
-    #[serde(rename = "updatedPrices")]
+    #[serde(rename = "marketAddress", default)]
+    pub market_address: Option<String>,
+    #[serde(
+        rename = "updatedPrices",
+        deserialize_with = "deserialize_amm_price_entries"
+    )]
     pub updated_prices: Vec<AmmPriceEntry>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     pub timestamp: Value,
+}
+
+fn deserialize_amm_price_entries<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<AmmPriceEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        Many(Vec<AmmPriceEntry>),
+        One(AmmPriceEntry),
+    }
+
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::Many(entries) => entries,
+        OneOrMany::One(entry) => vec![entry],
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1642,6 +1671,64 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+
+    #[test]
+    fn new_price_data_decodes_snapshot_object_and_streamed_array() {
+        // Initial snapshot: `sendInitialAmmPrices` emits one object per market.
+        let snapshot: NewPriceData = serde_json::from_value(serde_json::json!({
+            "marketAddress": "0x1676716ef7f19b5c5d690631cb57cf0bfd900a3d",
+            "updatedPrices": {
+                "collateralDecimals": 6,
+                "marketAddress": "0x1676716ef7f19b5c5d690631cb57cf0bfd900a3d",
+                "marketId": 101,
+                "noPrice": 0.42,
+                "yesPrice": 0.58
+            },
+            "blockNumber": 0,
+            "timestamp": "2026-10-01T00:00:00.000Z"
+        }))
+        .expect("snapshot frame should decode");
+        assert_eq!(
+            snapshot.market_address.as_deref(),
+            Some("0x1676716ef7f19b5c5d690631cb57cf0bfd900a3d")
+        );
+        assert_eq!(snapshot.updated_prices.len(), 1);
+        assert_eq!(snapshot.updated_prices[0].market_id, Some(101));
+        assert_eq!(snapshot.updated_prices[0].yes_price, 0.58);
+
+        // Streamed update: the room emit carries an array and no top-level address.
+        let streamed: NewPriceData = serde_json::from_value(serde_json::json!({
+            "updatedPrices": [
+                {
+                    "marketAddress": "0x1676716ef7f19b5c5d690631cb57cf0bfd900a3d",
+                    "marketId": 101,
+                    "noPrice": 0.41,
+                    "yesPrice": 0.59
+                }
+            ],
+            "blockNumber": 36_000_000,
+            "timestamp": "2026-10-01T00:00:01.000Z"
+        }))
+        .expect("streamed frame should decode");
+        assert_eq!(streamed.market_address, None);
+        assert_eq!(streamed.updated_prices.len(), 1);
+        assert_eq!(streamed.updated_prices[0].no_price, 0.41);
+
+        // Snapshot for a market whose AmmPriceData has no marketId.
+        let no_id: NewPriceData = serde_json::from_value(serde_json::json!({
+            "marketAddress": "0x1676716ef7f19b5c5d690631cb57cf0bfd900a3d",
+            "updatedPrices": {
+                "collateralDecimals": 6,
+                "marketAddress": "0x1676716ef7f19b5c5d690631cb57cf0bfd900a3d",
+                "noPrice": 0.5,
+                "yesPrice": 0.5
+            },
+            "blockNumber": 0,
+            "timestamp": "2026-10-01T00:00:00.000Z"
+        }))
+        .expect("snapshot without marketId should decode");
+        assert_eq!(no_id.updated_prices[0].market_id, None);
+    }
 
     #[test]
     fn websocket_headers_include_sdk_tracking() {

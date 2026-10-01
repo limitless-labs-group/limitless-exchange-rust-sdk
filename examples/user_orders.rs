@@ -1,13 +1,5 @@
 mod support;
 
-use serde_json::Value;
-
-fn printable_value(value: Option<&Value>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "null".to_string())
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = support::api_key_client()?;
@@ -29,12 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for order in fluent_orders.iter().take(10) {
         println!(
-            "- id={} status={} type={} price={:?} filledSize={}",
-            order.id,
-            order.status.as_deref().unwrap_or("unknown"),
-            order.order_type,
-            order.price,
-            printable_value(order.filled_size.as_ref())
+            "- id={} status={} type={} side={} price={} remainingSize={}",
+            order.id, order.status, order.order_type, order.side, order.price, order.remaining_size
         );
     }
 

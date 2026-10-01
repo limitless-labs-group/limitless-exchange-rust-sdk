@@ -467,7 +467,7 @@ pub struct CancelReplaceError {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "status", deny_unknown_fields)]
+#[serde(tag = "status")]
 pub enum CancelReplaceCancelResult {
     #[serde(rename = "SUCCESS")]
     Success {
@@ -483,7 +483,7 @@ pub enum CancelReplaceCancelResult {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CancelReplaceSuccessData {
     pub execution: OrderExecution,
     pub order: CreatedOrder,
@@ -492,11 +492,10 @@ pub struct CancelReplaceSuccessData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CancelReplaceNotAttempted {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "status", deny_unknown_fields)]
+#[serde(tag = "status")]
 pub enum CancelReplaceReplacementResult {
     #[serde(rename = "SUCCESS")]
     Success { data: Box<CancelReplaceSuccessData> },
@@ -1943,7 +1942,7 @@ where
     }
 }
 
-fn deserialize_option_f64_from_number_or_string<'de, D>(
+pub(crate) fn deserialize_option_f64_from_number_or_string<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<f64>, D::Error>
 where
@@ -2161,22 +2160,78 @@ mod tests {
     }
 
     #[test]
-    fn cancel_replace_response_rejects_contradictory_variants() {
-        let contradictory_cancel = json!({
+    fn cancel_replace_response_tolerates_additive_server_fields() {
+        // The `status` tag selects the variant; extra keys the server may add
+        // later (here `warnings` and `requestId`) must not fail the decode, the
+        // same way every other response struct in the crate ignores unknowns.
+        let cancel: CancelReplaceCancelResult = serde_json::from_value(json!({
             "status": "SUCCESS",
             "orderId": "order-1",
-            "error": {"code": "x", "message": "x"}
-        });
-        assert!(serde_json::from_value::<CancelReplaceCancelResult>(contradictory_cancel).is_err());
+            "clientOrderId": "tag-1",
+            "warnings": ["late"]
+        }))
+        .expect("additive field on cancel result");
+        assert!(matches!(
+            cancel,
+            CancelReplaceCancelResult::Success { ref order_id, .. } if order_id == "order-1"
+        ));
 
-        let contradictory_replacement = json!({
+        let replacement: CancelReplaceReplacementResult = serde_json::from_value(json!({
+            "status": "SUCCESS",
+            "data": {
+                "order": {
+                    "id": "order-2",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "makerAmount": 6_500_000,
+                    "takerAmount": 10_000_000,
+                    "expiration": "0",
+                    "signatureType": 0,
+                    "salt": 1,
+                    "maker": TEST_SIGNER_ADDRESS,
+                    "signer": TEST_SIGNER_ADDRESS,
+                    "taker": ZERO_ADDRESS,
+                    "tokenId": "12345",
+                    "side": 0,
+                    "feeRateBps": 300,
+                    "nonce": 0,
+                    "signature": EXPECTED_ORDER_SIGNATURE,
+                    "orderType": "GTC",
+                    "price": "0.65",
+                    "marketId": 9876
+                },
+                "makerMatches": [],
+                "execution": {
+                    "matched": false,
+                    "settlementStatus": "UNMATCHED",
+                    "feeRateBps": 300,
+                    "effectiveFeeBps": 0,
+                    "totalsRaw": {
+                        "contractsGross": "0",
+                        "contractsFee": "0",
+                        "contractsNet": "0",
+                        "usdGross": "0",
+                        "usdFee": "0",
+                        "usdNet": "0"
+                    }
+                },
+                "requestId": "req-1"
+            }
+        }))
+        .expect("additive field on replacement data");
+        assert!(matches!(
+            replacement,
+            CancelReplaceReplacementResult::Success { ref data } if data.order.id == "order-2"
+        ));
+
+        let not_attempted: CancelReplaceReplacementResult = serde_json::from_value(json!({
             "status": "NOT_ATTEMPTED",
-            "error": {"code": "x", "message": "x"}
-        });
-        assert!(serde_json::from_value::<CancelReplaceReplacementResult>(
-            contradictory_replacement
-        )
-        .is_err());
+            "requestId": "req-2"
+        }))
+        .expect("additive field on NOT_ATTEMPTED");
+        assert!(matches!(
+            not_attempted,
+            CancelReplaceReplacementResult::NotAttempted(_)
+        ));
     }
 
     #[test]
