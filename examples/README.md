@@ -42,6 +42,8 @@ Common environment variables:
 - `PROFILE_ADDRESS` optionally fetches an additional address-specific profile in the portfolio example
 - `LIMITLESS_BASE_URL` and `LIMITLESS_STRATEGY_HEADER` for the custom-client example
 
+Collateral fee venues: signed order examples need no code changes — the SDK signs `fee_rate_bps = 0` automatically when `market.venue.fee_module_type` is `"COLLATERAL"`. Before placing non-post-only orders on those markets with your own wallet, approve USDC to `market.venue.fee_module` (see "Collateral Fee Venues" in the main README). `LIMITLESS_TARGET_FEE_RATE_BPS` is ignored for delegated orders on those venues.
+
 Partner / delegated examples:
 
 - `LIMITLESS_PARTNER_PROFILE_ID`

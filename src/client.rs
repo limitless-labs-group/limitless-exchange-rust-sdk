@@ -35,13 +35,15 @@ impl Client {
     }
 
     pub fn from_http_client(http: HttpClient) -> Result<Self> {
+        let markets = MarketFetcher::new(http.clone());
         Ok(Self {
-            markets: MarketFetcher::new(http.clone()),
+            delegated_orders: DelegatedOrderService::new(http.clone(), Some(http.logger()))
+                .with_market_fetcher(markets.clone()),
+            markets,
             portfolio: PortfolioFetcher::new(http.clone()),
             pages: MarketPageFetcher::new(http.clone()),
             api_tokens: ApiTokenService::new(http.clone()),
             partner_accounts: PartnerAccountService::new(http.clone()),
-            delegated_orders: DelegatedOrderService::new(http.clone(), Some(http.logger())),
             server_wallets: ServerWalletService::new(http.clone()),
             amm: AmmService::new(http.clone()),
             http,

@@ -243,6 +243,28 @@ let result = order_client
 
 Replace many orders at once with `order_client.cancel_replace_batch(vec![...])`; the response `results` are index-aligned to the input. Each method has a `*_with_raw` sibling returning `SdkResponse<T>`, and partner integrations use the delegated `cancel_replace` / `cancel_replace_batch` (which set `on_behalf_of`). The single-order variant allows a `409` conflict through as a decodable result.
 
+### Collateral Fee Venues
+
+Some markets trade on collateral fee venues, which charge the taker fee in USDC through a separate on-chain fee module. Existing markets stay on their current venue and behave exactly as before.
+
+- **Detect the venue.** Markets from `get_market` include a `venue`. On collateral fee venues it also carries `fee_module` (`feeModule`) and `fee_module_type == "COLLATERAL"` (`feeModuleType`); legacy venues omit both. Use `venue.is_collateral_fee_venue()` or `is_collateral_fee_venue(market.venue.as_ref())`.
+- **Approve USDC to the fee module.** On a collateral fee venue, the wallet that signs orders must call `approve(venue.fee_module, amount)` on the USDC contract (max uint256 recommended) before placing any order that is not `post_only`, for both BUY and SELL. `post_only` orders do not need it. Without it the API rejects the order with `Insufficient collateral allowance for the order fee.` One approval is needed per fee module address; SIMPLE and NegRisk markets use different fee modules, so always read `venue.fee_module` from the market (`venue.collateral_fee_approval_target()` returns it on collateral fee venues and `None` otherwise) and never hardcode it.
+- **Existing approvals stay as they are.** Collateral fee venues use the same exchange contracts (and NegRisk adapter) as today, so the existing USDC and conditional-token approvals to `venue.exchange` / `venue.adapter` remain valid, and the EIP-712 order domain (verifying contract = `venue.exchange`) is unchanged.
+- **Orders are signed with `fee_rate_bps = 0`.** Any other value is rejected with `FEE_RATE_MISMATCH`. `OrderClient::create_order`, `OrderClient::cancel_replace`, and the delegated order service set this automatically from the market venue (cached by `client.markets.get_market`, otherwise fetched once per market slug); legacy venues keep the current behavior. If you build and sign orders yourself with `OrderBuilder`, `build_unsigned_order`, `sign_order`, or `sign_order_with_config`, set `fee_rate_bps` to `fee_rate_bps_for_venue(market.venue.as_ref(), current_fee_rate_bps)` before signing.
+- **Keep a little extra USDC.** BUY orders on collateral fee venues need enough USDC for the order plus the trading fee.
+- **Managed wallets need no action.** Server wallets and other wallets Limitless provisions and manages get these approvals automatically.
+
+```rust
+let market = client.markets.get_market(&slug).await?;
+if let Some(fee_module) = market
+    .venue
+    .as_ref()
+    .and_then(|venue| venue.collateral_fee_approval_target())
+{
+    // Approve USDC to `fee_module` from the signing wallet (once per fee module address).
+}
+```
+
 ## Workflow Guide
 
 - Public market discovery: [examples/active_markets.rs](examples/active_markets.rs)

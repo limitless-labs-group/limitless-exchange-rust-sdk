@@ -15,6 +15,8 @@ pub mod portfolio;
 pub mod raw_response;
 pub mod retry;
 pub mod server_wallets;
+#[cfg(test)]
+mod test_support;
 mod time_utils;
 pub mod websocket;
 

@@ -23,7 +23,7 @@ use crate::{
     errors::{LimitlessError, Result},
     http_client::{HttpClient, RequestOptions},
     logger::{noop_logger, SharedLogger},
-    markets::{MarketFetcher, Venue},
+    markets::{is_collateral_fee_venue, MarketFetcher, Venue},
     portfolio::{PortfolioFetcher, UserProfile},
     raw_response::SdkResponse,
 };
@@ -929,11 +929,11 @@ impl OrderClient {
         self.client.require_auth("CreateOrder")?;
         let receive_window = normalize_receive_window_options(receive_window, current_unix_ms)?;
         let user_data = self.ensure_user_data().await?;
-        let signing_config = self
-            .resolve_signing_config_for_market(&params.market_slug)
-            .await?;
+        let venue = self.resolve_venue_for_market(&params.market_slug).await?;
+        let signing_config = self.signing_config_for_venue(&params.market_slug, venue.as_ref())?;
 
-        let unsigned_order = self.build_unsigned_order(params.args.clone()).await?;
+        let mut unsigned_order = self.build_unsigned_order(params.args.clone()).await?;
+        apply_venue_fee_rate(&mut unsigned_order, venue.as_ref());
         let signature = self.signer.sign_order(&unsigned_order, &signing_config)?;
 
         let payload = NewOrderPayload {
@@ -1075,12 +1075,15 @@ impl OrderClient {
             current_unix_ms,
         )?;
         let user_data = self.ensure_user_data().await?;
-        let signing_config = self
-            .resolve_signing_config_for_market(&params.replacement.market_slug)
+        let venue = self
+            .resolve_venue_for_market(&params.replacement.market_slug)
             .await?;
-        let unsigned = self
+        let signing_config =
+            self.signing_config_for_venue(&params.replacement.market_slug, venue.as_ref())?;
+        let mut unsigned = self
             .build_unsigned_order(params.replacement.args.clone())
             .await?;
+        apply_venue_fee_rate(&mut unsigned, venue.as_ref());
         let signature = self.signer.sign_order(&unsigned, &signing_config)?;
         let owner_id = params.on_behalf_of.unwrap_or(user_data.user_id);
 
@@ -1200,21 +1203,29 @@ impl OrderClient {
         &self,
         market_slug: &str,
     ) -> Result<OrderSigningConfig> {
-        let venue = match self.market_fetcher.get_venue(market_slug) {
-            Some(venue) if !venue.exchange.is_empty() => Some(venue),
-            _ => {
-                self.logger.warn(
-                    "Venue not cached, fetching market details. For better performance, call get_market() before create_order().",
-                );
-                let market = self.market_fetcher.get_market(market_slug).await?;
-                market.venue
-            }
-        };
+        let venue = self.resolve_venue_for_market(market_slug).await?;
+        self.signing_config_for_venue(market_slug, venue.as_ref())
+    }
 
+    async fn resolve_venue_for_market(&self, market_slug: &str) -> Result<Option<Venue>> {
+        if !matches!(self.market_fetcher.get_venue(market_slug), Some(venue) if !venue.exchange.is_empty())
+        {
+            self.logger.warn(
+                "Venue not cached, fetching market details. For better performance, call get_market() before create_order().",
+            );
+        }
+        self.market_fetcher.resolve_venue(market_slug).await
+    }
+
+    fn signing_config_for_venue(
+        &self,
+        market_slug: &str,
+        venue: Option<&Venue>,
+    ) -> Result<OrderSigningConfig> {
         if let Some(Venue { exchange, .. }) = venue {
             if !exchange.is_empty() {
                 let mut config = self.signing_config.clone();
-                config.contract_address = exchange;
+                config.contract_address = exchange.clone();
                 return Ok(config);
             }
         }
@@ -1230,6 +1241,22 @@ impl OrderClient {
             "market {market_slug} does not expose venue.exchange and no fallback signing contract is configured"
         )))
     }
+}
+
+/// Fee rate the API expects in the signed order for this venue.
+///
+/// Collateral fee venues collect the fee through the venue fee module, so their
+/// orders carry `fee_rate_bps = 0`. Legacy venues keep `default_fee_rate_bps`.
+pub fn fee_rate_bps_for_venue(venue: Option<&Venue>, default_fee_rate_bps: i32) -> i32 {
+    if is_collateral_fee_venue(venue) {
+        0
+    } else {
+        default_fee_rate_bps
+    }
+}
+
+pub(crate) fn apply_venue_fee_rate(order: &mut UnsignedOrder, venue: Option<&Venue>) {
+    order.fee_rate_bps = fee_rate_bps_for_venue(venue, order.fee_rate_bps);
 }
 
 pub(crate) fn normalize_receive_window_options(
@@ -2029,6 +2056,168 @@ mod tests {
                 post_only: false,
             }),
         }
+    }
+
+    const TEST_EXCHANGE: &str = "0xa4409D988CA2218d956BeEFD3874100F444f0DC3";
+    const PROFILE_FEE_RATE_BPS: i32 = 250;
+
+    fn test_venue(collateral_fee: bool) -> Venue {
+        Venue {
+            exchange: TEST_EXCHANGE.to_string(),
+            adapter: None,
+            fee_module: collateral_fee
+                .then(|| "0x0000000000000000000000000000000000000002".to_string()),
+            fee_module_type: collateral_fee
+                .then(|| crate::markets::FEE_MODULE_TYPE_COLLATERAL.to_string()),
+        }
+    }
+
+    fn profile_route() -> (&'static str, &'static str, u16, String) {
+        (
+            "GET",
+            "/profiles/me",
+            200,
+            json!({
+                "id": 42,
+                "account": TEST_SIGNER_ADDRESS,
+                "rank": {"id": 1, "name": "Bronze", "feeRateBps": PROFILE_FEE_RATE_BPS}
+            })
+            .to_string(),
+        )
+    }
+
+    fn order_client_with_cached_venue(base_url: String, collateral_fee: bool) -> OrderClient {
+        let client = HttpClient::builder()
+            .base_url(base_url)
+            .api_key("test-api-key")
+            .build()
+            .expect("client");
+        let market_fetcher = MarketFetcher::new(client.clone());
+        market_fetcher.cache_venue("test-market", test_venue(collateral_fee));
+        OrderClient::new(
+            client,
+            TEST_PRIVATE_KEY_HEX,
+            Some(OrderClientOptions::default().with_market_fetcher(market_fetcher)),
+        )
+        .expect("order client")
+    }
+
+    fn submitted_order_fee_rate(collateral_fee: bool) -> (i64, bool) {
+        let (base_url, requests) = crate::test_support::spawn_routes(vec![
+            profile_route(),
+            (
+                "POST",
+                "/orders",
+                400,
+                json!({"message": "stub"}).to_string(),
+            ),
+        ]);
+        let order_client = order_client_with_cached_venue(base_url, collateral_fee);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _ = runtime.block_on(order_client.create_order(test_create_order_params()));
+
+        let order_request = std::iter::from_fn(|| {
+            requests
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .ok()
+        })
+        .find(|request| request.method == "POST" && request.path == "/orders")
+        .expect("order should be submitted");
+        let body = order_request.json();
+        let order = &body["order"];
+        let fee_rate_bps = order["feeRateBps"].as_i64().expect("feeRateBps");
+
+        let unsigned = UnsignedOrder {
+            salt: order["salt"].as_i64().expect("salt"),
+            maker: order["maker"].as_str().expect("maker").to_string(),
+            signer: order["signer"].as_str().expect("signer").to_string(),
+            taker: order["taker"].as_str().expect("taker").to_string(),
+            token_id: order["tokenId"].as_str().expect("tokenId").to_string(),
+            maker_amount: order["makerAmount"].as_i64().expect("makerAmount"),
+            taker_amount: order["takerAmount"].as_i64().expect("takerAmount"),
+            expiration: order["expiration"]
+                .as_str()
+                .expect("expiration")
+                .to_string(),
+            nonce: 0,
+            fee_rate_bps: fee_rate_bps as i32,
+            side: Side::Buy,
+            signature_type: SignatureType::Eoa,
+            price: order["price"].as_f64(),
+        };
+        let expected_signature = OrderSigner::new(TEST_PRIVATE_KEY_HEX)
+            .expect("signer")
+            .sign_order(
+                &unsigned,
+                &OrderSigningConfig {
+                    chain_id: DEFAULT_CHAIN_ID,
+                    contract_address: TEST_EXCHANGE.to_string(),
+                },
+            )
+            .expect("signature");
+        let signature_covers_fee_rate = order["signature"] == json!(expected_signature);
+        (fee_rate_bps, signature_covers_fee_rate)
+    }
+
+    #[test]
+    fn fee_rate_bps_for_venue_is_zero_only_on_collateral_fee_venues() {
+        assert_eq!(fee_rate_bps_for_venue(Some(&test_venue(true)), 300), 0);
+        assert_eq!(fee_rate_bps_for_venue(Some(&test_venue(false)), 300), 300);
+        assert_eq!(fee_rate_bps_for_venue(None, 300), 300);
+    }
+
+    #[test]
+    fn create_order_signs_zero_fee_rate_on_collateral_fee_venue() {
+        let (fee_rate_bps, signature_covers_fee_rate) = submitted_order_fee_rate(true);
+        assert_eq!(fee_rate_bps, 0);
+        assert!(signature_covers_fee_rate);
+    }
+
+    #[test]
+    fn create_order_keeps_profile_fee_rate_on_legacy_venue() {
+        let (fee_rate_bps, signature_covers_fee_rate) = submitted_order_fee_rate(false);
+        assert_eq!(fee_rate_bps, i64::from(PROFILE_FEE_RATE_BPS));
+        assert!(signature_covers_fee_rate);
+    }
+
+    fn cancel_replace_fee_rate(collateral_fee: bool) -> i32 {
+        let (base_url, _requests) = crate::test_support::spawn_routes(vec![profile_route()]);
+        let order_client = order_client_with_cached_venue(base_url, collateral_fee);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let params = test_create_order_params();
+        let request = runtime
+            .block_on(
+                order_client.build_cancel_replace_request(CancelReplaceParams {
+                    cancel: CancelTarget::OrderId {
+                        order_id: "order-1".to_string(),
+                    },
+                    replacement: ReplacementOrderParams {
+                        order_type: params.order_type,
+                        market_slug: params.market_slug,
+                        args: params.args,
+                        client_order_id: None,
+                        timestamp: None,
+                        recv_window: None,
+                        stp_policy: None,
+                    },
+                    mode: CancelReplaceMode::StopOnFailure,
+                    on_behalf_of: None,
+                }),
+            )
+            .expect("cancel-replace request should build");
+        request.replacement.order.fee_rate_bps
+    }
+
+    #[test]
+    fn cancel_replace_uses_zero_fee_rate_on_collateral_fee_venue() {
+        assert_eq!(cancel_replace_fee_rate(true), 0);
+        assert_eq!(cancel_replace_fee_rate(false), PROFILE_FEE_RATE_BPS);
     }
 
     #[test]
