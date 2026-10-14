@@ -2,12 +2,14 @@ use crate::{
     errors::{LimitlessError, Result},
     http_client::{HttpClient, RequestOptions},
     logger::{noop_logger, SharedLogger},
+    markets::MarketFetcher,
     orders::{
-        cancel_replace_submission, normalize_receive_window_options, post_only_from_args,
-        validate_cancel_replace_fields, CancelReplaceBatchRequest, CancelReplaceBatchResponse,
-        CancelReplaceMode, CancelReplaceOrderPayload, CancelReplaceRequest, CancelReplaceResult,
-        CancelResponse, CancelTarget, OrderArgs, OrderBuilder, OrderResponse, OrderType,
-        ReceiveWindowOptions, ReplacementOrderParams, Side, SignatureType,
+        cancel_replace_submission, fee_rate_bps_for_venue, normalize_receive_window_options,
+        post_only_from_args, validate_cancel_replace_fields, CancelReplaceBatchRequest,
+        CancelReplaceBatchResponse, CancelReplaceMode, CancelReplaceOrderPayload,
+        CancelReplaceRequest, CancelReplaceResult, CancelResponse, CancelTarget, OrderArgs,
+        OrderBuilder, OrderResponse, OrderType, ReceiveWindowOptions, ReplacementOrderParams, Side,
+        SignatureType,
     },
     raw_response::SdkResponse,
 };
@@ -19,14 +21,36 @@ const DEFAULT_DELEGATED_FEE_RATE_BPS: i32 = 300;
 pub struct DelegatedOrderService {
     client: HttpClient,
     logger: SharedLogger,
+    market_fetcher: MarketFetcher,
 }
 
 impl DelegatedOrderService {
     pub fn new(client: HttpClient, logger: Option<SharedLogger>) -> Self {
         Self {
+            market_fetcher: MarketFetcher::new(client.clone()),
             client,
             logger: logger.unwrap_or_else(noop_logger),
         }
+    }
+
+    /// Shares a [`MarketFetcher`] so delegated orders reuse its cached market venues.
+    ///
+    /// The venue decides the order fee rate: collateral fee venues require
+    /// `fee_rate_bps = 0`. [`crate::Client`] wires its own `markets` fetcher here.
+    #[must_use]
+    pub fn with_market_fetcher(mut self, market_fetcher: MarketFetcher) -> Self {
+        self.market_fetcher = market_fetcher;
+        self
+    }
+
+    async fn fee_rate_bps_for_market(&self, market_slug: &str, requested: i32) -> Result<i32> {
+        let default_fee_rate_bps = if requested <= 0 {
+            DEFAULT_DELEGATED_FEE_RATE_BPS
+        } else {
+            requested
+        };
+        let venue = self.market_fetcher.resolve_venue(market_slug).await?;
+        Ok(fee_rate_bps_for_venue(venue.as_ref(), default_fee_rate_bps))
     }
 
     pub async fn create_order(&self, params: CreateDelegatedOrderParams) -> Result<OrderResponse> {
@@ -80,11 +104,9 @@ impl DelegatedOrderService {
         let receive_window =
             normalize_receive_window_options(receive_window, crate::orders::current_unix_ms)?;
 
-        let fee_rate_bps = if params.fee_rate_bps <= 0 {
-            DEFAULT_DELEGATED_FEE_RATE_BPS
-        } else {
-            params.fee_rate_bps
-        };
+        let fee_rate_bps = self
+            .fee_rate_bps_for_market(&params.market_slug, params.fee_rate_bps)
+            .await?;
 
         let builder = OrderBuilder::new(crate::constants::ZERO_ADDRESS, fee_rate_bps, None);
         let unsigned_order = builder.build_order(&params.args)?;
@@ -213,7 +235,7 @@ impl DelegatedOrderService {
         params: DelegatedCancelReplaceParams,
     ) -> Result<SdkResponse<CancelReplaceResult>> {
         self.client.require_auth("CancelReplaceDelegatedOrder")?;
-        let request = self.build_cancel_replace_request(params)?;
+        let request = self.build_cancel_replace_request(params).await?;
         let raw = self
             .client
             .post_raw(
@@ -244,10 +266,10 @@ impl DelegatedOrderService {
                 "cancel-replace batch must contain at least one operation",
             ));
         }
-        let requests = operations
-            .into_iter()
-            .map(|operation| self.build_cancel_replace_request(operation))
-            .collect::<Result<Vec<_>>>()?;
+        let mut requests = Vec::with_capacity(operations.len());
+        for operation in operations {
+            requests.push(self.build_cancel_replace_request(operation).await?);
+        }
         let raw = self
             .client
             .post_raw(
@@ -274,7 +296,7 @@ impl DelegatedOrderService {
         })
     }
 
-    fn build_cancel_replace_request(
+    async fn build_cancel_replace_request(
         &self,
         params: DelegatedCancelReplaceParams,
     ) -> Result<CancelReplaceRequest> {
@@ -290,11 +312,9 @@ impl DelegatedOrderService {
             }),
             crate::orders::current_unix_ms,
         )?;
-        let fee_rate_bps = if params.fee_rate_bps <= 0 {
-            DEFAULT_DELEGATED_FEE_RATE_BPS
-        } else {
-            params.fee_rate_bps
-        };
+        let fee_rate_bps = self
+            .fee_rate_bps_for_market(&params.replacement.market_slug, params.fee_rate_bps)
+            .await?;
         let unsigned = OrderBuilder::new(crate::constants::ZERO_ADDRESS, fee_rate_bps, None)
             .build_order(&params.replacement.args)?;
 
@@ -533,34 +553,65 @@ mod tests {
         assert!(error.to_string().contains("recv_window"));
     }
 
+    fn test_venue(collateral_fee: bool) -> crate::markets::Venue {
+        crate::markets::Venue {
+            exchange: "0x0000000000000000000000000000000000000001".to_string(),
+            adapter: None,
+            fee_module: collateral_fee
+                .then(|| "0x0000000000000000000000000000000000000002".to_string()),
+            fee_module_type: collateral_fee
+                .then(|| crate::markets::FEE_MODULE_TYPE_COLLATERAL.to_string()),
+        }
+    }
+
+    fn service_with_cached_venue(
+        base_url: Option<String>,
+        collateral_fee: bool,
+    ) -> DelegatedOrderService {
+        let mut builder = HttpClient::builder().api_key("test-api-key");
+        if let Some(base_url) = base_url {
+            builder = builder.base_url(base_url);
+        }
+        let client = builder.build().expect("client");
+        let market_fetcher = MarketFetcher::new(client.clone());
+        market_fetcher.cache_venue("market", test_venue(collateral_fee));
+        DelegatedOrderService::new(client, None).with_market_fetcher(market_fetcher)
+    }
+
+    fn test_cancel_replace_params(fee_rate_bps: i32) -> DelegatedCancelReplaceParams {
+        DelegatedCancelReplaceParams {
+            cancel: CancelTarget::OrderId {
+                order_id: "34bd2f18-c58a-43f9-8574-ad7a0f337f7d".to_string(),
+            },
+            replacement: ReplacementOrderParams {
+                order_type: OrderType::Gtc,
+                market_slug: "market".to_string(),
+                args: test_delegated_order_params().args,
+                client_order_id: Some("replacement-1".to_string()),
+                timestamp: Some(1_770_000_000_000),
+                recv_window: Some(1500),
+                stp_policy: Some(crate::orders::StpPolicy::CancelMaker),
+            },
+            mode: CancelReplaceMode::AllowFailure,
+            on_behalf_of: 326,
+            fee_rate_bps,
+        }
+    }
+
+    fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(future)
+    }
+
     #[test]
     fn delegated_cancel_replace_omits_signature_and_nests_on_behalf_of_once() {
-        let service = DelegatedOrderService::new(
-            HttpClient::builder()
-                .api_key("test-api-key")
-                .build()
-                .expect("client"),
-            None,
-        );
-        let request = service
-            .build_cancel_replace_request(DelegatedCancelReplaceParams {
-                cancel: CancelTarget::OrderId {
-                    order_id: "34bd2f18-c58a-43f9-8574-ad7a0f337f7d".to_string(),
-                },
-                replacement: ReplacementOrderParams {
-                    order_type: OrderType::Gtc,
-                    market_slug: "market".to_string(),
-                    args: test_delegated_order_params().args,
-                    client_order_id: Some("replacement-1".to_string()),
-                    timestamp: Some(1_770_000_000_000),
-                    recv_window: Some(1500),
-                    stp_policy: Some(crate::orders::StpPolicy::CancelMaker),
-                },
-                mode: CancelReplaceMode::AllowFailure,
-                on_behalf_of: 326,
-                fee_rate_bps: 300,
-            })
-            .expect("request should build");
+        let service = service_with_cached_venue(None, false);
+        let request =
+            block_on(service.build_cancel_replace_request(test_cancel_replace_params(300)))
+                .expect("request should build");
 
         let value = serde_json::to_value(request).expect("request should serialize");
         assert_eq!(value["onBehalfOf"], 326);
@@ -568,5 +619,52 @@ mod tests {
         assert!(value["replacement"].get("onBehalfOf").is_none());
         assert!(value["replacement"]["order"].get("signature").is_none());
         assert_eq!(value["replacement"]["stpPolicy"], "cancel_maker");
+        assert_eq!(value["replacement"]["order"]["feeRateBps"], 300);
+    }
+
+    #[test]
+    fn delegated_cancel_replace_uses_zero_fee_rate_on_collateral_fee_venue() {
+        let service = service_with_cached_venue(None, true);
+        let request =
+            block_on(service.build_cancel_replace_request(test_cancel_replace_params(300)))
+                .expect("request should build");
+
+        assert_eq!(request.replacement.order.fee_rate_bps, 0);
+    }
+
+    fn submitted_delegated_fee_rate(collateral_fee: bool, requested_fee_rate_bps: i32) -> i64 {
+        let (base_url, requests) = crate::test_support::spawn_routes(vec![(
+            "POST",
+            "/orders",
+            400,
+            json!({"message": "stub"}).to_string(),
+        )]);
+        let service = service_with_cached_venue(Some(base_url), collateral_fee);
+        let mut params = test_delegated_order_params();
+        params.fee_rate_bps = requested_fee_rate_bps;
+        let _ = block_on(service.create_order(params));
+
+        let request = requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("order should be submitted");
+        assert_eq!(request.path, "/orders");
+        request.json()["order"]["feeRateBps"]
+            .as_i64()
+            .expect("feeRateBps")
+    }
+
+    #[test]
+    fn delegated_order_uses_zero_fee_rate_on_collateral_fee_venue() {
+        assert_eq!(submitted_delegated_fee_rate(true, 300), 0);
+        assert_eq!(submitted_delegated_fee_rate(true, 0), 0);
+    }
+
+    #[test]
+    fn delegated_order_keeps_fee_rate_on_legacy_venue() {
+        assert_eq!(submitted_delegated_fee_rate(false, 250), 250);
+        assert_eq!(
+            submitted_delegated_fee_rate(false, 0),
+            i64::from(DEFAULT_DELEGATED_FEE_RATE_BPS)
+        );
     }
 }

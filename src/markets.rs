@@ -71,6 +71,22 @@ impl MarketFetcher {
         Ok(SdkResponse { data: market, raw })
     }
 
+    /// Returns the cached venue for `slug`, or fetches the market to resolve it.
+    pub(crate) async fn resolve_venue(&self, slug: &str) -> Result<Option<Venue>> {
+        match self.get_venue(slug) {
+            Some(venue) if !venue.exchange.is_empty() => Ok(Some(venue)),
+            _ => Ok(self.get_market(slug).await?.venue),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cache_venue(&self, slug: &str, venue: Venue) {
+        self.venue_cache
+            .write()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(slug.to_string(), venue);
+    }
+
     pub fn get_venue(&self, slug: &str) -> Option<Venue> {
         self.venue_cache
             .read()
@@ -217,11 +233,61 @@ pub struct MarketOutcome {
     pub price: Option<f64>,
 }
 
+/// `venue.feeModuleType` value reported by markets on collateral fee venues.
+pub const FEE_MODULE_TYPE_COLLATERAL: &str = "COLLATERAL";
+
+/// Contract addresses a market trades through.
+///
+/// Markets on collateral fee venues also report `fee_module` and
+/// `fee_module_type`; legacy venues omit both fields.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Venue {
+    /// EIP-712 verifying contract for order signing.
     pub exchange: String,
+    /// NegRisk adapter, when the market is a NegRisk market.
     #[serde(default)]
     pub adapter: Option<String>,
+    /// Fee module that collects the taker fee in USDC on collateral fee venues.
+    ///
+    /// The signing wallet must approve USDC to this address before placing any
+    /// order that is not `post_only`. Always read it from the market.
+    #[serde(rename = "feeModule", default, skip_serializing_if = "Option::is_none")]
+    pub fee_module: Option<String>,
+    /// Fee module type. `"COLLATERAL"` marks a collateral fee venue.
+    #[serde(
+        rename = "feeModuleType",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fee_module_type: Option<String>,
+}
+
+impl Venue {
+    /// Returns `true` when this venue charges the taker fee in USDC through a
+    /// separate fee module (`fee_module_type == "COLLATERAL"`).
+    ///
+    /// Orders on these venues must be signed with `fee_rate_bps = 0`, and
+    /// non-post-only orders need a USDC approval to [`Venue::fee_module`].
+    pub fn is_collateral_fee_venue(&self) -> bool {
+        self.fee_module_type.as_deref() == Some(FEE_MODULE_TYPE_COLLATERAL)
+    }
+
+    /// USDC spender required on top of the existing exchange approvals, if any.
+    ///
+    /// Returns the fee module address on collateral fee venues and `None` on
+    /// legacy venues.
+    pub fn collateral_fee_approval_target(&self) -> Option<&str> {
+        if self.is_collateral_fee_venue() {
+            self.fee_module.as_deref().filter(|value| !value.is_empty())
+        } else {
+            None
+        }
+    }
+}
+
+/// Option-friendly form of [`Venue::is_collateral_fee_venue`]; `None` is a legacy venue.
+pub fn is_collateral_fee_venue(venue: Option<&Venue>) -> bool {
+    venue.is_some_and(Venue::is_collateral_fee_venue)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -467,4 +533,70 @@ pub struct MarketsResponse {
     pub offset: Option<i32>,
     #[serde(default)]
     pub limit: Option<i32>,
+}
+
+#[cfg(test)]
+mod collateral_fee_venue_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn collateral_venue() -> Venue {
+        serde_json::from_value(json!({
+            "exchange": "0x0000000000000000000000000000000000000001",
+            "adapter": null,
+            "feeModule": "0x0000000000000000000000000000000000000002",
+            "feeModuleType": "COLLATERAL"
+        }))
+        .expect("collateral venue should deserialize")
+    }
+
+    fn legacy_venue() -> Venue {
+        serde_json::from_value(json!({
+            "exchange": "0x0000000000000000000000000000000000000001",
+            "adapter": "0x0000000000000000000000000000000000000003"
+        }))
+        .expect("legacy venue should deserialize")
+    }
+
+    #[test]
+    fn venue_decodes_fee_module_fields_on_collateral_fee_venues() {
+        let venue = collateral_venue();
+        assert_eq!(
+            venue.fee_module.as_deref(),
+            Some("0x0000000000000000000000000000000000000002")
+        );
+        assert_eq!(
+            venue.fee_module_type.as_deref(),
+            Some(FEE_MODULE_TYPE_COLLATERAL)
+        );
+        assert!(venue.is_collateral_fee_venue());
+        assert!(is_collateral_fee_venue(Some(&venue)));
+        assert_eq!(
+            venue.collateral_fee_approval_target(),
+            Some("0x0000000000000000000000000000000000000002")
+        );
+    }
+
+    #[test]
+    fn legacy_venue_without_fee_module_fields_is_not_collateral_fee_venue() {
+        let venue = legacy_venue();
+        assert!(venue.fee_module.is_none());
+        assert!(venue.fee_module_type.is_none());
+        assert!(!venue.is_collateral_fee_venue());
+        assert!(!is_collateral_fee_venue(Some(&venue)));
+        assert!(!is_collateral_fee_venue(None));
+        assert_eq!(venue.collateral_fee_approval_target(), None);
+
+        let value = serde_json::to_value(&venue).expect("venue should serialize");
+        assert!(value.get("feeModule").is_none());
+        assert!(value.get("feeModuleType").is_none());
+    }
+
+    #[test]
+    fn unknown_fee_module_type_is_not_collateral_fee_venue() {
+        let mut venue = collateral_venue();
+        venue.fee_module_type = Some("OTHER".to_string());
+        assert!(!venue.is_collateral_fee_venue());
+        assert_eq!(venue.collateral_fee_approval_target(), None);
+    }
 }
