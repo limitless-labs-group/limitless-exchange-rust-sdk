@@ -2,6 +2,32 @@
 
 All notable changes to the Limitless Exchange Rust SDK will be documented in this file.
 
+## [1.2.0]
+
+### Added
+
+- Collateral fee venue support: `Venue` now exposes `fee_module` and `fee_module_type`
+  (`Option<String>`, skipped when `None`), the `FEE_MODULE_TYPE_COLLATERAL` constant,
+  `Venue::is_collateral_fee_venue()`, `Venue::collateral_fee_approval_target()` and the
+  `Option`-friendly `markets::is_collateral_fee_venue(Option<&Venue>)`.
+- `OrderClient::create_order` and `OrderClient::cancel_replace` sign orders with
+  `fee_rate_bps = 0` on collateral fee venues. Legacy venues keep the profile fee rate.
+- `DelegatedOrderService` (create, cancel-replace and cancel-replace batch) submits
+  `fee_rate_bps = 0` on collateral fee venues. It resolves the market venue through a
+  `MarketFetcher` (cached, or fetched once per market); the new
+  `DelegatedOrderService::with_market_fetcher` builder shares a fetcher, and
+  `Client::from_http_client` wires `Client::markets` into `Client::delegated_orders`.
+- `orders::fee_rate_bps_for_venue(venue, default)` for callers that build and sign
+  orders by hand.
+- README documents the additional USDC approval to `venue.feeModule` required for
+  every non-`post_only` order (BUY and SELL) on collateral fee venues.
+
+### Changed
+
+- `Venue` gained two public fields. Code that deserializes venues is unaffected; code
+  that constructs `Venue { exchange, adapter }` literals must add
+  `fee_module: None, fee_module_type: None`.
+
 ## [1.1.0]
 
 ### Added

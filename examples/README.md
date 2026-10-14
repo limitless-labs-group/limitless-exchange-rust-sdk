@@ -103,4 +103,4 @@ Notes:
 - `websocket_order_events` accepts either `LIMITLESS_API_KEY` or scoped HMAC credentials and prints typed `MATCHED` and `EXECUTION` order events.
 - `server_wallet_redeem_withdraw` is only for child profiles created with `create_server_wallet = true`; if `LIMITLESS_WITHDRAW_DESTINATION` is omitted, withdraw defaults to the authenticated partner smart wallet when present, otherwise the authenticated partner account.
 - Set `LIMITLESS_ALLOWLIST_WITHDRAW_DESTINATION=1` with `LIMITLESS_WITHDRAW_DESTINATION` to add or reuse the destination with Privy identity auth before the HMAC withdraw request.
-- `cargo check --examples` passes in this repository as of the current `1.1.0` release prep.
+- `cargo check --examples` passes in this repository as of the current `1.2.0` release prep.
