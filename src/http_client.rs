@@ -341,6 +341,26 @@ impl HttpClient {
         .await
     }
 
+    /// GET with request-local headers, included alongside the configured HMAC auth.
+    pub async fn get_raw_with_headers(
+        &self,
+        path: &str,
+        extra_headers: HashMap<String, String>,
+        options: RequestOptions,
+    ) -> Result<RawResponse> {
+        self.do_request_raw::<serde_json::Value>(
+            Method::GET,
+            path,
+            None,
+            options,
+            RequestExecutionConfig {
+                extra_headers,
+                identity_token: None,
+            },
+        )
+        .await
+    }
+
     pub async fn get_raw_with_identity(
         &self,
         path: &str,
@@ -459,6 +479,18 @@ impl HttpClient {
         options: RequestOptions,
         cfg: RequestExecutionConfig,
     ) -> Result<RawResponse> {
+        if method == Method::POST
+            && path.starts_with("/parlay/partner/")
+            && self
+                .read_state()
+                .headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("x-on-behalf-of"))
+        {
+            return Err(LimitlessError::invalid_input(
+                "configure on_behalf_of on Packs methods, not global headers",
+            ));
+        }
         let url = join_url(&self.base_url(), path)?;
         let signing_path = request_uri_for_signing(path)?;
         let logger = self.logger();
