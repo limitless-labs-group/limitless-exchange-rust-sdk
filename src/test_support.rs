@@ -13,6 +13,7 @@ pub(crate) struct CapturedRequest {
     pub method: String,
     pub path: String,
     pub body: String,
+    pub headers: std::collections::HashMap<String, String>,
 }
 
 impl CapturedRequest {
@@ -26,6 +27,20 @@ impl CapturedRequest {
 pub(crate) fn spawn_routes(
     routes: Vec<(&'static str, &'static str, u16, String)>,
 ) -> (String, mpsc::Receiver<CapturedRequest>) {
+    spawn_stub(routes, false)
+}
+
+/// Serve each matching response once, allowing state transitions on one route.
+pub(crate) fn spawn_sequence(
+    routes: Vec<(&'static str, &'static str, u16, String)>,
+) -> (String, mpsc::Receiver<CapturedRequest>) {
+    spawn_stub(routes, true)
+}
+
+fn spawn_stub(
+    mut routes: Vec<(&'static str, &'static str, u16, String)>,
+    consume: bool,
+) -> (String, mpsc::Receiver<CapturedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
     let address = listener.local_addr().expect("address");
     let (sender, receiver) = mpsc::channel();
@@ -38,19 +53,38 @@ pub(crate) fn spawn_routes(
             let mut request_line = head.lines().next().unwrap_or_default().split_whitespace();
             let method = request_line.next().unwrap_or_default().to_string();
             let path = request_line.next().unwrap_or_default().to_string();
-            let (status, response_body) = routes
-                .iter()
-                .find(|(route_method, route_path, _, _)| {
-                    *route_method == method && path.split('?').next() == Some(*route_path)
-                })
-                .map(|(_, _, status, body)| (*status, body.clone()))
-                .unwrap_or((404, r#"{"message":"not found"}"#.to_string()));
+            let matched = routes.iter().position(|(route_method, route_path, _, _)| {
+                *route_method == method && path.split('?').next() == Some(*route_path)
+            });
+            let (status, response_body) = if let Some(index) = matched {
+                let (_, _, status, body) = routes[index].clone();
+                if consume {
+                    routes.remove(index);
+                }
+                (status, body)
+            } else {
+                (404, r#"{"message":"not found"}"#.to_string())
+            };
             let _ = write!(
                 stream,
                 "HTTP/1.1 {status} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
                 response_body.len()
             );
-            if sender.send(CapturedRequest { method, path, body }).is_err() {
+            let headers = head
+                .lines()
+                .skip(1)
+                .filter_map(|line| line.split_once(':'))
+                .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_string()))
+                .collect();
+            if sender
+                .send(CapturedRequest {
+                    method,
+                    path,
+                    body,
+                    headers,
+                })
+                .is_err()
+            {
                 return;
             }
         }

@@ -7,6 +7,7 @@ use crate::{
     market_pages::MarketPageFetcher,
     markets::MarketFetcher,
     orders::{OrderClient, OrderClientOptions},
+    packs::PacksService,
     partner_accounts::PartnerAccountService,
     portfolio::PortfolioFetcher,
     server_wallets::ServerWalletService,
@@ -23,6 +24,7 @@ pub struct Client {
     pub delegated_orders: DelegatedOrderService,
     pub server_wallets: ServerWalletService,
     pub amm: AmmService,
+    pub packs: PacksService,
 }
 
 impl Client {
@@ -46,6 +48,7 @@ impl Client {
             partner_accounts: PartnerAccountService::new(http.clone()),
             server_wallets: ServerWalletService::new(http.clone()),
             amm: AmmService::new(http.clone()),
+            packs: PacksService::new(http.clone()),
             http,
         })
     }
