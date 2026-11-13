@@ -2,7 +2,7 @@
 
 **v1.3.0** | Rust SDK parity with the existing Limitless SDK surface
 
-Rust SDK for interacting with the Limitless Exchange API.
+The official Rust SDK for the [Limitless Exchange](https://limitless.exchange) prediction market API on Base. Build trading bots with a typed HTTP client, EIP-712 order signing and order-book (CLOB) order flows. Docs: [docs.limitless.exchange](https://docs.limitless.exchange/developers/sdk/rust/getting-started).
 
 This crate is a parity-driven Rust port of the existing Limitless SDK surface. The current implementation includes:
 
@@ -22,7 +22,7 @@ This SDK is provided "as-is" without any warranties or guarantees. Trading on pr
 - You are responsible for testing the SDK thoroughly before using it in production
 - The SDK authors are not liable for any financial losses or damages
 - You should review and understand the code before executing any trades
-- It is recommended to test all functionality on testnet or with small amounts first
+- There is no testnet or sandbox: test with small live orders (for example the minimum order size) before trading larger amounts
 - The SDK may contain bugs or unexpected behavior despite best efforts
 
 **ALWAYS TEST BEFORE USING IN PRODUCTION WITH REAL FUNDS**
